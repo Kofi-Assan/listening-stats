@@ -2,7 +2,7 @@
 
 A real-time listening statistics dashboard for Spotify, powered by Spicetify.
 
-![Version](https://img.shields.io/badge/version-1.0.2-blue)
+![Version](https://img.shields.io/badge/version-1.0.42-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Spicetify](https://img.shields.io/badge/spicetify-2.x-1DB954)
 
@@ -13,23 +13,30 @@ A real-time listening statistics dashboard for Spotify, powered by Spicetify.
 - **Activity chart**: Visualize your listening patterns by hour
 - **Artist payout estimate**: See how much you've contributed to artists
 - **Streak tracking**: Track consecutive listening days
-- **Genre breakdown**: See which genres you listen to most
+- **Skip rate**: Track how often you skip songs
+- **New artists discovered**: See how many new artists you've listened to
 - **Local storage**: All data stored locally in IndexedDB
 - **Accurate tracking**: Handles pauses, skips, and session recovery
+- **Auto-update notifications**: Get notified when updates are available
 
 ## Installation
 
 ### Quick Install (Recommended)
+
+**Linux / macOS:**
+```bash
+curl -fsSL https://raw.githubusercontent.com/Xndr2/listening-stats/main/install.sh | bash
+```
 
 **Windows (PowerShell):**
 ```powershell
 iwr -useb 'https://raw.githubusercontent.com/Xndr2/listening-stats/main/install.ps1' | iex
 ```
 
-**Linux / macOS:**
-```bash
-curl -fsSL https://raw.githubusercontent.com/Xndr2/listening-stats/main/install.sh | sh
-```
+The installer will automatically:
+- Download the latest release
+- Install to your Spicetify CustomApps folder
+- Configure and apply Spicetify
 
 ### Manual Install
 
@@ -52,21 +59,41 @@ npm install
 npm run deploy
 ```
 
+## Updating
+
+Listening Stats will notify you when a new version is available. A non-intrusive popup will appear in the top-right corner with update instructions.
+
+**To update:**
+1. Click "Copy Install Command" in the update popup
+2. Open a terminal
+3. Paste and run the command
+4. Restart Spotify
+
+Alternatively, run the install command again - it handles updates automatically.
+
 ## Usage
 
-After installation, you'll see a bar chart icon (📊) in Spotify's sidebar. Click it to open the Listening Stats dashboard.
+After installation, you'll find "Listening Stats" in Spotify's sidebar. Click it to open the dashboard.
 
 **Dashboard shows:**
 
 - Time listened with track/artist/unique counts
 - Estimated artist payout
 - Listening streak
+- Skip rate
 - New artists discovered
 - Top tracks, artists, and albums
 - Hourly activity chart
 - Recently played tracks
 
 Use the period tabs to switch between **Today**, **This Week**, **This Month**, and **All Time**.
+
+**Settings panel** (click Settings in footer):
+- Refresh stats
+- Enrich data (fetch missing album art, etc.)
+- Clear cache
+- Check for updates
+- Reset all data
 
 ## Troubleshooting
 
