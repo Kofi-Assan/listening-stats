@@ -23,6 +23,251 @@ var ListeningStatsApp = (() => {
     default: () => index_default
   });
 
+  // src/services/spotify-api.ts
+  var STORAGE_PREFIX = "listening-stats:";
+  var MIN_API_INTERVAL_MS = 1e4;
+  var BATCH_SIZE = 3;
+  var DEFAULT_BACKOFF_MS = 3e5;
+  var MAX_BACKOFF_MS = 36e5;
+  var CACHE_PERSIST_INTERVAL_MS = 6e4;
+  var audioFeaturesCache = /* @__PURE__ */ new Map();
+  var artistGenresCache = /* @__PURE__ */ new Map();
+  var rateLimitedUntil = 0;
+  var lastApiCallTime = 0;
+  var cachesPersistTimeout = null;
+  function initFromStorage() {
+    try {
+      const storedRateLimit = localStorage.getItem(`${STORAGE_PREFIX}rateLimitedUntil`);
+      if (storedRateLimit) {
+        rateLimitedUntil = parseInt(storedRateLimit, 10);
+        if (Date.now() >= rateLimitedUntil) {
+          rateLimitedUntil = 0;
+          localStorage.removeItem(`${STORAGE_PREFIX}rateLimitedUntil`);
+        }
+      }
+      const storedAudioFeatures = localStorage.getItem(`${STORAGE_PREFIX}audioFeaturesCache`);
+      if (storedAudioFeatures) {
+        const parsed = JSON.parse(storedAudioFeatures);
+        audioFeaturesCache = new Map(Object.entries(parsed));
+        console.log(`[ListeningStats] Loaded ${audioFeaturesCache.size} cached audio features`);
+      }
+      const storedGenres = localStorage.getItem(`${STORAGE_PREFIX}artistGenresCache`);
+      if (storedGenres) {
+        const parsed = JSON.parse(storedGenres);
+        artistGenresCache = new Map(Object.entries(parsed));
+        console.log(`[ListeningStats] Loaded ${artistGenresCache.size} cached artist genres`);
+      }
+    } catch (error) {
+      console.warn("[ListeningStats] Failed to load cached API data:", error);
+    }
+  }
+  function scheduleCachePersist() {
+    if (cachesPersistTimeout) return;
+    cachesPersistTimeout = window.setTimeout(() => {
+      persistCaches();
+      cachesPersistTimeout = null;
+    }, CACHE_PERSIST_INTERVAL_MS);
+  }
+  function persistCaches() {
+    try {
+      const audioFeaturesObj = {};
+      const audioEntries = Array.from(audioFeaturesCache.entries()).slice(-500);
+      audioEntries.forEach(([k, v]) => {
+        audioFeaturesObj[k] = v;
+      });
+      localStorage.setItem(`${STORAGE_PREFIX}audioFeaturesCache`, JSON.stringify(audioFeaturesObj));
+      const genresObj = {};
+      const genreEntries = Array.from(artistGenresCache.entries()).slice(-500);
+      genreEntries.forEach(([k, v]) => {
+        genresObj[k] = v;
+      });
+      localStorage.setItem(`${STORAGE_PREFIX}artistGenresCache`, JSON.stringify(genresObj));
+    } catch (error) {
+      console.warn("[ListeningStats] Failed to persist caches:", error);
+    }
+  }
+  function handleRateLimit(error) {
+    let backoffMs = DEFAULT_BACKOFF_MS;
+    if (error?.headers?.["retry-after"]) {
+      const retryAfter = parseInt(error.headers["retry-after"], 10);
+      if (!isNaN(retryAfter)) {
+        backoffMs = Math.min(retryAfter * 1e3, MAX_BACKOFF_MS);
+      }
+    } else if (error?.body?.["Retry-After"]) {
+      const retryAfter = parseInt(error.body["Retry-After"], 10);
+      if (!isNaN(retryAfter)) {
+        backoffMs = Math.min(retryAfter * 1e3, MAX_BACKOFF_MS);
+      }
+    }
+    rateLimitedUntil = Date.now() + backoffMs;
+    localStorage.setItem(`${STORAGE_PREFIX}rateLimitedUntil`, rateLimitedUntil.toString());
+    console.log(`[ListeningStats] Rate limited, backing off for ${Math.ceil(backoffMs / 6e4)} minutes`);
+  }
+  function clearRateLimit() {
+    if (rateLimitedUntil > 0) {
+      rateLimitedUntil = 0;
+      localStorage.removeItem(`${STORAGE_PREFIX}rateLimitedUntil`);
+    }
+  }
+  function isApiAvailable() {
+    return Date.now() >= rateLimitedUntil;
+  }
+  function getRateLimitRemaining() {
+    if (rateLimitedUntil <= 0) return 0;
+    return Math.max(0, Math.ceil((rateLimitedUntil - Date.now()) / 1e3));
+  }
+  async function waitForApiSlot() {
+    if (!isApiAvailable()) {
+      const waitTime = rateLimitedUntil - Date.now();
+      console.log(`[ListeningStats] Rate limited, skipping (${Math.ceil(waitTime / 1e3)}s remaining)`);
+      return false;
+    }
+    const timeSinceLastCall = Date.now() - lastApiCallTime;
+    if (timeSinceLastCall < MIN_API_INTERVAL_MS) {
+      await new Promise((resolve) => setTimeout(resolve, MIN_API_INTERVAL_MS - timeSinceLastCall));
+    }
+    lastApiCallTime = Date.now();
+    return true;
+  }
+  initFromStorage();
+  function extractTrackId(uri) {
+    const match = uri.match(/spotify:track:([a-zA-Z0-9]+)/);
+    return match ? match[1] : null;
+  }
+  function extractArtistId(uri) {
+    const match = uri.match(/spotify:artist:([a-zA-Z0-9]+)/);
+    return match ? match[1] : null;
+  }
+  async function getAudioAnalysis(trackUri) {
+    try {
+      const data = await Spicetify.getAudioData(trackUri);
+      if (data?.track?.tempo) {
+        return { tempo: data.track.tempo };
+      }
+    } catch (error) {
+    }
+    return null;
+  }
+  function isPlaceholderAudioFeatures(af) {
+    return af.valence === 0.5 && af.energy === 0.5 && af.danceability === 0.5;
+  }
+  async function fetchAudioFeaturesBatch(trackUris) {
+    const result = /* @__PURE__ */ new Map();
+    const uncachedUris = trackUris.filter((uri) => {
+      if (audioFeaturesCache.has(uri)) {
+        const cached = audioFeaturesCache.get(uri);
+        if (!isPlaceholderAudioFeatures(cached)) {
+          result.set(uri, cached);
+          return false;
+        }
+      }
+      return extractTrackId(uri) !== null;
+    });
+    if (uncachedUris.length === 0) {
+      return result;
+    }
+    const tempoFromAnalysis = /* @__PURE__ */ new Map();
+    for (const uri of uncachedUris) {
+      const analysis = await getAudioAnalysis(uri);
+      if (analysis) {
+        tempoFromAnalysis.set(uri, analysis.tempo);
+      }
+    }
+    const stillNeeded = uncachedUris;
+    if (stillNeeded.length > 0 && await waitForApiSlot()) {
+      const smallBatch = stillNeeded.slice(0, BATCH_SIZE);
+      try {
+        const ids = smallBatch.map((uri) => extractTrackId(uri)).join(",");
+        const response = await Spicetify.CosmosAsync.get(
+          `https://api.spotify.com/v1/audio-features?ids=${ids}`
+        );
+        if (response?.audio_features) {
+          clearRateLimit();
+          response.audio_features.forEach((features, index) => {
+            if (features) {
+              const uri = smallBatch[index];
+              const tempo = tempoFromAnalysis.get(uri) || features.tempo;
+              const audioFeatures = {
+                energy: features.energy,
+                valence: features.valence,
+                danceability: features.danceability,
+                tempo,
+                acousticness: features.acousticness,
+                instrumentalness: features.instrumentalness,
+                speechiness: features.speechiness,
+                liveness: features.liveness
+              };
+              audioFeaturesCache.set(uri, audioFeatures);
+              result.set(uri, audioFeatures);
+            }
+          });
+          scheduleCachePersist();
+          console.log(`[ListeningStats] Got ${response.audio_features.filter(Boolean).length} audio features from Web API`);
+        }
+      } catch (error) {
+        if (error?.message?.includes("429") || error?.status === 429) {
+          handleRateLimit(error);
+        } else {
+          console.warn("[ListeningStats] Web API audio features failed:", error);
+        }
+      }
+    }
+    return result;
+  }
+  async function fetchArtistGenresBatch(artistUris) {
+    const result = /* @__PURE__ */ new Map();
+    const uncachedUris = artistUris.filter((uri) => {
+      if (artistGenresCache.has(uri)) {
+        result.set(uri, artistGenresCache.get(uri));
+        return false;
+      }
+      return extractArtistId(uri) !== null;
+    });
+    if (uncachedUris.length === 0) {
+      return result;
+    }
+    if (await waitForApiSlot()) {
+      const smallBatch = uncachedUris.slice(0, BATCH_SIZE);
+      try {
+        const ids = smallBatch.map((uri) => extractArtistId(uri)).join(",");
+        const response = await Spicetify.CosmosAsync.get(
+          `https://api.spotify.com/v1/artists?ids=${ids}`
+        );
+        if (response?.artists) {
+          clearRateLimit();
+          response.artists.forEach((artist, index) => {
+            if (artist) {
+              const genres = artist.genres || [];
+              const uri = smallBatch[index];
+              artistGenresCache.set(uri, genres);
+              result.set(uri, genres);
+            }
+          });
+          scheduleCachePersist();
+          console.log(`[ListeningStats] Got genres for ${response.artists.filter(Boolean).length} artists`);
+        }
+      } catch (error) {
+        if (error?.message?.includes("429") || error?.status === 429) {
+          handleRateLimit(error);
+        } else {
+          console.warn("[ListeningStats] Artist genres fetch failed:", error);
+        }
+      }
+    }
+    return result;
+  }
+  function clearApiCaches() {
+    audioFeaturesCache.clear();
+    artistGenresCache.clear();
+    localStorage.removeItem(`${STORAGE_PREFIX}audioFeaturesCache`);
+    localStorage.removeItem(`${STORAGE_PREFIX}artistGenresCache`);
+  }
+  function resetRateLimit() {
+    rateLimitedUntil = 0;
+    localStorage.removeItem(`${STORAGE_PREFIX}rateLimitedUntil`);
+    console.log("[ListeningStats] Rate limit state reset");
+  }
+
   // node_modules/idb/build/index.js
   var instanceOfAny = (object, constructors) => constructors.some((c) => object instanceof c);
   var idbProxyableTypes;
@@ -323,14 +568,14 @@ var ListeningStatsApp = (() => {
       await db.put(STORE_NAME, updated);
     }
   }
-  function isPlaceholderAudioFeatures(af) {
+  function isPlaceholderAudioFeatures2(af) {
     return af.valence === 0.5 && af.energy === 0.5 && af.danceability === 0.5;
   }
   async function getEventsNeedingEnrichment(limit = 50) {
     const db = await getDB();
     const allEvents = await db.getAll(STORE_NAME);
     return allEvents.filter((event) => {
-      const needsFeatures = !event.audioFeatures || isPlaceholderAudioFeatures(event.audioFeatures);
+      const needsFeatures = !event.audioFeatures || isPlaceholderAudioFeatures2(event.audioFeatures);
       return needsFeatures && event.trackUri.startsWith("spotify:track:");
     }).slice(0, limit);
   }
@@ -577,251 +822,6 @@ var ListeningStatsApp = (() => {
     }
   }
 
-  // src/services/spotify-api.ts
-  var STORAGE_PREFIX = "listening-stats:";
-  var MIN_API_INTERVAL_MS = 1e4;
-  var BATCH_SIZE = 3;
-  var DEFAULT_BACKOFF_MS = 3e5;
-  var MAX_BACKOFF_MS = 36e5;
-  var CACHE_PERSIST_INTERVAL_MS = 6e4;
-  var audioFeaturesCache = /* @__PURE__ */ new Map();
-  var artistGenresCache = /* @__PURE__ */ new Map();
-  var rateLimitedUntil = 0;
-  var lastApiCallTime = 0;
-  var cachesPersistTimeout = null;
-  function initFromStorage() {
-    try {
-      const storedRateLimit = localStorage.getItem(`${STORAGE_PREFIX}rateLimitedUntil`);
-      if (storedRateLimit) {
-        rateLimitedUntil = parseInt(storedRateLimit, 10);
-        if (Date.now() >= rateLimitedUntil) {
-          rateLimitedUntil = 0;
-          localStorage.removeItem(`${STORAGE_PREFIX}rateLimitedUntil`);
-        }
-      }
-      const storedAudioFeatures = localStorage.getItem(`${STORAGE_PREFIX}audioFeaturesCache`);
-      if (storedAudioFeatures) {
-        const parsed = JSON.parse(storedAudioFeatures);
-        audioFeaturesCache = new Map(Object.entries(parsed));
-        console.log(`[ListeningStats] Loaded ${audioFeaturesCache.size} cached audio features`);
-      }
-      const storedGenres = localStorage.getItem(`${STORAGE_PREFIX}artistGenresCache`);
-      if (storedGenres) {
-        const parsed = JSON.parse(storedGenres);
-        artistGenresCache = new Map(Object.entries(parsed));
-        console.log(`[ListeningStats] Loaded ${artistGenresCache.size} cached artist genres`);
-      }
-    } catch (error) {
-      console.warn("[ListeningStats] Failed to load cached API data:", error);
-    }
-  }
-  function scheduleCachePersist() {
-    if (cachesPersistTimeout) return;
-    cachesPersistTimeout = window.setTimeout(() => {
-      persistCaches();
-      cachesPersistTimeout = null;
-    }, CACHE_PERSIST_INTERVAL_MS);
-  }
-  function persistCaches() {
-    try {
-      const audioFeaturesObj = {};
-      const audioEntries = Array.from(audioFeaturesCache.entries()).slice(-500);
-      audioEntries.forEach(([k, v]) => {
-        audioFeaturesObj[k] = v;
-      });
-      localStorage.setItem(`${STORAGE_PREFIX}audioFeaturesCache`, JSON.stringify(audioFeaturesObj));
-      const genresObj = {};
-      const genreEntries = Array.from(artistGenresCache.entries()).slice(-500);
-      genreEntries.forEach(([k, v]) => {
-        genresObj[k] = v;
-      });
-      localStorage.setItem(`${STORAGE_PREFIX}artistGenresCache`, JSON.stringify(genresObj));
-    } catch (error) {
-      console.warn("[ListeningStats] Failed to persist caches:", error);
-    }
-  }
-  function handleRateLimit(error) {
-    let backoffMs = DEFAULT_BACKOFF_MS;
-    if (error?.headers?.["retry-after"]) {
-      const retryAfter = parseInt(error.headers["retry-after"], 10);
-      if (!isNaN(retryAfter)) {
-        backoffMs = Math.min(retryAfter * 1e3, MAX_BACKOFF_MS);
-      }
-    } else if (error?.body?.["Retry-After"]) {
-      const retryAfter = parseInt(error.body["Retry-After"], 10);
-      if (!isNaN(retryAfter)) {
-        backoffMs = Math.min(retryAfter * 1e3, MAX_BACKOFF_MS);
-      }
-    }
-    rateLimitedUntil = Date.now() + backoffMs;
-    localStorage.setItem(`${STORAGE_PREFIX}rateLimitedUntil`, rateLimitedUntil.toString());
-    console.log(`[ListeningStats] Rate limited, backing off for ${Math.ceil(backoffMs / 6e4)} minutes`);
-  }
-  function clearRateLimit() {
-    if (rateLimitedUntil > 0) {
-      rateLimitedUntil = 0;
-      localStorage.removeItem(`${STORAGE_PREFIX}rateLimitedUntil`);
-    }
-  }
-  function isApiAvailable() {
-    return Date.now() >= rateLimitedUntil;
-  }
-  function getRateLimitRemaining() {
-    if (rateLimitedUntil <= 0) return 0;
-    return Math.max(0, Math.ceil((rateLimitedUntil - Date.now()) / 1e3));
-  }
-  async function waitForApiSlot() {
-    if (!isApiAvailable()) {
-      const waitTime = rateLimitedUntil - Date.now();
-      console.log(`[ListeningStats] Rate limited, skipping (${Math.ceil(waitTime / 1e3)}s remaining)`);
-      return false;
-    }
-    const timeSinceLastCall = Date.now() - lastApiCallTime;
-    if (timeSinceLastCall < MIN_API_INTERVAL_MS) {
-      await new Promise((resolve) => setTimeout(resolve, MIN_API_INTERVAL_MS - timeSinceLastCall));
-    }
-    lastApiCallTime = Date.now();
-    return true;
-  }
-  initFromStorage();
-  function extractTrackId(uri) {
-    const match = uri.match(/spotify:track:([a-zA-Z0-9]+)/);
-    return match ? match[1] : null;
-  }
-  function extractArtistId(uri) {
-    const match = uri.match(/spotify:artist:([a-zA-Z0-9]+)/);
-    return match ? match[1] : null;
-  }
-  async function getAudioAnalysis(trackUri) {
-    try {
-      const data = await Spicetify.getAudioData(trackUri);
-      if (data?.track?.tempo) {
-        return { tempo: data.track.tempo };
-      }
-    } catch (error) {
-    }
-    return null;
-  }
-  function isPlaceholderAudioFeatures2(af) {
-    return af.valence === 0.5 && af.energy === 0.5 && af.danceability === 0.5;
-  }
-  async function fetchAudioFeaturesBatch(trackUris) {
-    const result = /* @__PURE__ */ new Map();
-    const uncachedUris = trackUris.filter((uri) => {
-      if (audioFeaturesCache.has(uri)) {
-        const cached = audioFeaturesCache.get(uri);
-        if (!isPlaceholderAudioFeatures2(cached)) {
-          result.set(uri, cached);
-          return false;
-        }
-      }
-      return extractTrackId(uri) !== null;
-    });
-    if (uncachedUris.length === 0) {
-      return result;
-    }
-    const tempoFromAnalysis = /* @__PURE__ */ new Map();
-    for (const uri of uncachedUris) {
-      const analysis = await getAudioAnalysis(uri);
-      if (analysis) {
-        tempoFromAnalysis.set(uri, analysis.tempo);
-      }
-    }
-    const stillNeeded = uncachedUris;
-    if (stillNeeded.length > 0 && await waitForApiSlot()) {
-      const smallBatch = stillNeeded.slice(0, BATCH_SIZE);
-      try {
-        const ids = smallBatch.map((uri) => extractTrackId(uri)).join(",");
-        const response = await Spicetify.CosmosAsync.get(
-          `https://api.spotify.com/v1/audio-features?ids=${ids}`
-        );
-        if (response?.audio_features) {
-          clearRateLimit();
-          response.audio_features.forEach((features, index) => {
-            if (features) {
-              const uri = smallBatch[index];
-              const tempo = tempoFromAnalysis.get(uri) || features.tempo;
-              const audioFeatures = {
-                energy: features.energy,
-                valence: features.valence,
-                danceability: features.danceability,
-                tempo,
-                acousticness: features.acousticness,
-                instrumentalness: features.instrumentalness,
-                speechiness: features.speechiness,
-                liveness: features.liveness
-              };
-              audioFeaturesCache.set(uri, audioFeatures);
-              result.set(uri, audioFeatures);
-            }
-          });
-          scheduleCachePersist();
-          console.log(`[ListeningStats] Got ${response.audio_features.filter(Boolean).length} audio features from Web API`);
-        }
-      } catch (error) {
-        if (error?.message?.includes("429") || error?.status === 429) {
-          handleRateLimit(error);
-        } else {
-          console.warn("[ListeningStats] Web API audio features failed:", error);
-        }
-      }
-    }
-    return result;
-  }
-  async function fetchArtistGenresBatch(artistUris) {
-    const result = /* @__PURE__ */ new Map();
-    const uncachedUris = artistUris.filter((uri) => {
-      if (artistGenresCache.has(uri)) {
-        result.set(uri, artistGenresCache.get(uri));
-        return false;
-      }
-      return extractArtistId(uri) !== null;
-    });
-    if (uncachedUris.length === 0) {
-      return result;
-    }
-    if (await waitForApiSlot()) {
-      const smallBatch = uncachedUris.slice(0, BATCH_SIZE);
-      try {
-        const ids = smallBatch.map((uri) => extractArtistId(uri)).join(",");
-        const response = await Spicetify.CosmosAsync.get(
-          `https://api.spotify.com/v1/artists?ids=${ids}`
-        );
-        if (response?.artists) {
-          clearRateLimit();
-          response.artists.forEach((artist, index) => {
-            if (artist) {
-              const genres = artist.genres || [];
-              const uri = smallBatch[index];
-              artistGenresCache.set(uri, genres);
-              result.set(uri, genres);
-            }
-          });
-          scheduleCachePersist();
-          console.log(`[ListeningStats] Got genres for ${response.artists.filter(Boolean).length} artists`);
-        }
-      } catch (error) {
-        if (error?.message?.includes("429") || error?.status === 429) {
-          handleRateLimit(error);
-        } else {
-          console.warn("[ListeningStats] Artist genres fetch failed:", error);
-        }
-      }
-    }
-    return result;
-  }
-  function clearApiCaches() {
-    audioFeaturesCache.clear();
-    artistGenresCache.clear();
-    localStorage.removeItem(`${STORAGE_PREFIX}audioFeaturesCache`);
-    localStorage.removeItem(`${STORAGE_PREFIX}artistGenresCache`);
-  }
-  function resetRateLimit() {
-    rateLimitedUntil = 0;
-    localStorage.removeItem(`${STORAGE_PREFIX}rateLimitedUntil`);
-    console.log("[ListeningStats] Rate limit state reset");
-  }
-
   // src/services/tracker.ts
   var enrichmentInProgress = false;
   var enrichmentCycle = "audioFeatures";
@@ -896,11 +896,11 @@ var ListeningStatsApp = (() => {
   var ENRICHMENT_INTERVAL_MS = 15 * 60 * 1e3;
 
   // src/services/updater.ts
-  var GITHUB_REPO = "YOUR_USERNAME/listening-stats";
+  var GITHUB_REPO = "Xndr2/listening-stats";
   var STORAGE_KEY = "listening-stats:lastUpdateCheck";
   var CHECK_INTERVAL_MS = 24 * 60 * 60 * 1e3;
   function getCurrentVersion() {
-    return "1.0.2";
+    return "1.0.3";
   }
   async function checkForUpdates() {
     const currentVersion = getCurrentVersion();
@@ -962,19 +962,6 @@ var ListeningStatsApp = (() => {
     Spicetify.showNotification('Download started. Extract to CustomApps/listening-stats and run "spicetify apply"');
   }
 
-  // src/app/styles.css
-  var styles_default = '/* Listening Stats - Main Styles */\n\n/* ===== Sidebar Icon ===== */\n[href="/listening-stats"] svg {\n  fill: currentColor !important;\n  color: var(--text-subdued) !important;\n}\n[href="/listening-stats"]:hover svg,\n[href="/listening-stats"][aria-current="page"] svg {\n  color: var(--text-base) !important;\n}\n\n/* ===== Page Layout ===== */\n.stats-page {\n  padding: 32px 48px;\n  max-width: 1400px;\n  margin: 0 auto;\n}\n\n/* ===== Header ===== */\n.stats-header {\n  margin-bottom: 24px;\n}\n\n.stats-title {\n  font-size: 2.5rem;\n  font-weight: 700;\n  margin: 0 0 4px 0;\n  letter-spacing: -0.5px;\n}\n\n.stats-subtitle {\n  font-size: 14px;\n  color: var(--text-subdued);\n  margin: 0;\n}\n\n/* ===== Period Tabs ===== */\n.period-tabs {\n  display: inline-flex;\n  background: var(--background-tinted-base);\n  border-radius: 8px;\n  padding: 4px;\n  margin-bottom: 28px;\n  gap: 2px;\n}\n\n.period-tab {\n  padding: 10px 20px;\n  border: none;\n  background: transparent;\n  color: var(--text-subdued);\n  font-size: 14px;\n  font-weight: 500;\n  border-radius: 6px;\n  cursor: pointer;\n  transition: all 0.2s ease;\n}\n\n.period-tab:hover {\n  color: var(--text-base);\n  background: rgba(255, 255, 255, 0.05);\n}\n\n.period-tab.active {\n  background: var(--background-elevated-base);\n  color: var(--text-base);\n  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);\n}\n\n/* ===== Overview Cards Row ===== */\n.overview-row {\n  display: grid;\n  grid-template-columns: 1fr 1fr 1fr 1fr 1fr;\n  gap: 16px;\n  margin-bottom: 32px;\n}\n\n.overview-card {\n  background: var(--background-tinted-base);\n  border-radius: 12px;\n  padding: 20px;\n  display: flex;\n  flex-direction: column;\n}\n\n.overview-card.hero {\n  grid-column: span 2;\n  background: linear-gradient(135deg, #1db954 0%, #1a9f4a 100%);\n  color: #000;\n}\n\n.overview-value {\n  font-size: 2rem;\n  font-weight: 800;\n  line-height: 1;\n  margin-bottom: 4px;\n}\n\n.overview-card.hero .overview-value {\n  font-size: 2.5rem;\n}\n\n.overview-label {\n  font-size: 11px;\n  font-weight: 600;\n  text-transform: uppercase;\n  letter-spacing: 0.5px;\n  opacity: 0.7;\n}\n\n.overview-card.hero .overview-label {\n  opacity: 0.85;\n}\n\n.overview-secondary {\n  display: flex;\n  gap: 24px;\n  margin-top: auto;\n  padding-top: 16px;\n  border-top: 1px solid rgba(0, 0, 0, 0.1);\n}\n\n.overview-stat {\n  display: flex;\n  flex-direction: column;\n}\n\n.overview-stat-value {\n  font-size: 1.25rem;\n  font-weight: 700;\n}\n\n.overview-stat-label {\n  font-size: 10px;\n  text-transform: uppercase;\n  opacity: 0.6;\n}\n\n/* Colored stats */\n.overview-card .stat-colored {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n}\n\n.stat-icon {\n  width: 40px;\n  height: 40px;\n  border-radius: 10px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  flex-shrink: 0;\n}\n\n.stat-icon svg {\n  width: 20px;\n  height: 20px;\n}\n\n.stat-icon.green { background: rgba(29, 185, 84, 0.15); color: #1db954; }\n.stat-icon.orange { background: rgba(243, 156, 18, 0.15); color: #f39c12; }\n.stat-icon.purple { background: rgba(155, 89, 182, 0.15); color: #9b59b6; }\n.stat-icon.red { background: rgba(231, 76, 60, 0.15); color: #e74c3c; }\n\n.stat-text .overview-value {\n  font-size: 1.5rem;\n}\n\n.stat-text .overview-value.green { color: #1db954; }\n.stat-text .overview-value.orange { color: #f39c12; }\n.stat-text .overview-value.purple { color: #9b59b6; }\n.stat-text .overview-value.red { color: #e74c3c; }\n\n/* ===== Top Lists Section ===== */\n.top-lists-section {\n  display: grid;\n  grid-template-columns: repeat(3, 1fr);\n  gap: 24px;\n  margin-bottom: 32px;\n}\n\n.top-list {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  min-height: 400px;\n  display: flex;\n  flex-direction: column;\n}\n\n.top-list-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  margin-bottom: 20px;\n}\n\n.top-list-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.top-list-title svg {\n  width: 20px;\n  height: 20px;\n  color: var(--text-subdued);\n}\n\n/* ===== Item List ===== */\n.item-list {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n  flex: 1;\n}\n\n.item-row {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 10px 12px;\n  margin: 0 -12px;\n  border-radius: 8px;\n  cursor: pointer;\n  transition: background 0.15s ease;\n}\n\n.item-row:hover {\n  background: rgba(255, 255, 255, 0.07);\n}\n\n.item-rank {\n  width: 24px;\n  font-size: 14px;\n  font-weight: 700;\n  text-align: center;\n  flex-shrink: 0;\n  color: var(--text-subdued);\n}\n\n.item-rank.gold { color: #f1c40f; text-shadow: 0 0 10px rgba(241, 196, 15, 0.3); }\n.item-rank.silver { color: #bdc3c7; }\n.item-rank.bronze { color: #cd6133; }\n\n.item-art {\n  width: 48px;\n  height: 48px;\n  border-radius: 6px;\n  object-fit: cover;\n  background: var(--background-elevated-base);\n  flex-shrink: 0;\n}\n\n.item-art.round {\n  border-radius: 50%;\n}\n\n.item-info {\n  flex: 1;\n  min-width: 0;\n}\n\n.item-name {\n  font-size: 14px;\n  font-weight: 500;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  margin-bottom: 2px;\n}\n\n.item-meta {\n  font-size: 12px;\n  color: var(--text-subdued);\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.item-stats {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n  flex-shrink: 0;\n}\n\n.item-plays {\n  font-size: 13px;\n  font-weight: 600;\n  color: var(--text-base);\n}\n\n.item-time {\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n/* Heart button */\n.heart-btn {\n  background: none;\n  border: none;\n  padding: 6px;\n  cursor: pointer;\n  color: var(--text-subdued);\n  display: flex;\n  align-items: center;\n  border-radius: 50%;\n  transition: all 0.15s ease;\n  flex-shrink: 0;\n}\n\n.heart-btn:hover {\n  color: var(--text-base);\n  background: rgba(255, 255, 255, 0.1);\n}\n\n.heart-btn.liked {\n  color: #1db954;\n}\n\n.heart-btn svg {\n  width: 18px;\n  height: 18px;\n}\n\n/* ===== Activity Chart Section ===== */\n.activity-section {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  margin-bottom: 32px;\n}\n\n.activity-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  margin-bottom: 20px;\n}\n\n.activity-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n}\n\n.activity-peak {\n  font-size: 13px;\n  color: var(--text-subdued);\n}\n\n.activity-peak strong {\n  color: #1db954;\n}\n\n.activity-chart {\n  height: 80px;\n  display: flex;\n  align-items: flex-end;\n  gap: 3px;\n}\n\n.activity-bar {\n  flex: 1;\n  background: rgba(255, 255, 255, 0.08);\n  border-radius: 3px 3px 0 0;\n  min-height: 4px;\n  transition: background 0.15s ease;\n  cursor: pointer;\n  position: relative;\n}\n\n.activity-bar.peak {\n  background: #1db954;\n}\n\n.activity-bar:hover {\n  background: #1db954;\n}\n\n.activity-bar-tooltip {\n  position: absolute;\n  bottom: calc(100% + 8px);\n  left: 50%;\n  transform: translateX(-50%);\n  background: var(--background-elevated-base);\n  padding: 6px 10px;\n  border-radius: 6px;\n  font-size: 11px;\n  white-space: nowrap;\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.15s ease;\n  z-index: 10;\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);\n}\n\n.activity-bar:hover .activity-bar-tooltip {\n  opacity: 1;\n}\n\n.chart-labels {\n  display: flex;\n  justify-content: space-between;\n  font-size: 10px;\n  color: var(--text-subdued);\n  margin-top: 10px;\n  padding: 0 2px;\n}\n\n/* ===== Recently Played ===== */\n.recent-section {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  margin-bottom: 32px;\n}\n\n.recent-header {\n  margin-bottom: 20px;\n}\n\n.recent-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n}\n\n.recent-scroll {\n  display: flex;\n  gap: 16px;\n  overflow-x: auto;\n  padding-bottom: 8px;\n  margin: 0 -24px;\n  padding: 0 24px;\n  scrollbar-width: thin;\n  scrollbar-color: var(--background-tinted-highlight) transparent;\n}\n\n.recent-scroll::-webkit-scrollbar {\n  height: 6px;\n}\n\n.recent-scroll::-webkit-scrollbar-track {\n  background: transparent;\n}\n\n.recent-scroll::-webkit-scrollbar-thumb {\n  background: var(--background-tinted-highlight);\n  border-radius: 3px;\n}\n\n.recent-card {\n  flex-shrink: 0;\n  width: 140px;\n  cursor: pointer;\n  transition: transform 0.15s ease;\n}\n\n.recent-card:hover {\n  transform: translateY(-4px);\n}\n\n.recent-card:hover .recent-art {\n  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);\n}\n\n.recent-art {\n  width: 140px;\n  height: 140px;\n  border-radius: 8px;\n  object-fit: cover;\n  background: var(--background-elevated-base);\n  margin-bottom: 10px;\n  transition: box-shadow 0.15s ease;\n}\n\n.recent-name {\n  font-size: 13px;\n  font-weight: 500;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  margin-bottom: 2px;\n}\n\n.recent-meta {\n  font-size: 12px;\n  color: var(--text-subdued);\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n/* ===== Footer ===== */\n.stats-footer {\n  padding-top: 20px;\n  border-top: 1px solid var(--background-tinted-highlight);\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: 12px;\n}\n\n.footer-left {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n}\n\n.settings-toggle {\n  background: none;\n  border: none;\n  color: var(--text-subdued);\n  font-size: 12px;\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  padding: 8px 12px;\n  border-radius: 6px;\n  transition: all 0.15s ease;\n}\n\n.settings-toggle:hover {\n  background: var(--background-tinted-base);\n  color: var(--text-base);\n}\n\n.settings-toggle svg {\n  width: 14px;\n  height: 14px;\n}\n\n.footer-btn {\n  padding: 8px 14px;\n  background: var(--background-tinted-base);\n  border: none;\n  border-radius: 6px;\n  color: var(--text-subdued);\n  font-size: 12px;\n  font-weight: 500;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.footer-btn:hover {\n  background: var(--background-tinted-highlight);\n  color: var(--text-base);\n}\n\n.footer-btn.primary {\n  background: #1db954;\n  color: #000;\n}\n\n.footer-btn.primary:hover {\n  background: #1ed760;\n}\n\n.footer-btn.danger:hover {\n  background: #e74c3c;\n  color: #fff;\n}\n\n.version-text {\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n/* ===== Settings Panel ===== */\n.settings-panel {\n  margin-top: 16px;\n  padding: 20px;\n  background: var(--background-tinted-base);\n  border-radius: 12px;\n}\n\n.settings-row {\n  display: flex;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.api-status {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  margin-top: 14px;\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n.status-dot {\n  width: 8px;\n  height: 8px;\n  border-radius: 50%;\n}\n\n.status-dot.green { background: #1db954; }\n.status-dot.red { background: #e74c3c; }\n\n/* ===== Empty State ===== */\n.empty-state {\n  text-align: center;\n  padding: 100px 20px;\n}\n\n.empty-icon {\n  width: 80px;\n  height: 80px;\n  margin: 0 auto 20px;\n  color: var(--text-subdued);\n  opacity: 0.5;\n}\n\n.empty-icon svg {\n  width: 100%;\n  height: 100%;\n}\n\n.empty-title {\n  font-size: 24px;\n  font-weight: 600;\n  margin-bottom: 10px;\n}\n\n.empty-text {\n  color: var(--text-subdued);\n  font-size: 15px;\n}\n\n/* ===== Loading ===== */\n.loading {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  min-height: 400px;\n  color: var(--text-subdued);\n  font-size: 15px;\n}\n\n/* ===== Modal ===== */\n.modal-overlay {\n  position: fixed;\n  top: 0;\n  left: 0;\n  right: 0;\n  bottom: 0;\n  background: rgba(0, 0, 0, 0.75);\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  z-index: 1000;\n  backdrop-filter: blur(4px);\n}\n\n.modal-content {\n  background: var(--background-base);\n  border-radius: 16px;\n  padding: 28px;\n  max-width: 420px;\n  width: 90%;\n  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);\n}\n\n.modal-title {\n  font-size: 20px;\n  font-weight: 700;\n  margin: 0 0 4px;\n}\n\n.modal-subtitle {\n  font-size: 13px;\n  color: var(--text-subdued);\n  margin: 0 0 20px;\n}\n\n.modal-changelog {\n  background: var(--background-tinted-base);\n  border-radius: 8px;\n  padding: 14px;\n  font-size: 13px;\n  max-height: 160px;\n  overflow-y: auto;\n  margin-bottom: 20px;\n  white-space: pre-wrap;\n  line-height: 1.5;\n}\n\n.modal-actions {\n  display: flex;\n  gap: 10px;\n  justify-content: flex-end;\n}\n\n.modal-btn {\n  padding: 10px 20px;\n  border-radius: 20px;\n  border: none;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.modal-btn.primary {\n  background: #1db954;\n  color: #000;\n}\n\n.modal-btn.primary:hover {\n  background: #1ed760;\n}\n\n.modal-btn.secondary {\n  background: var(--background-tinted-highlight);\n  color: var(--text-base);\n}\n\n.modal-btn.secondary:hover {\n  background: var(--background-elevated-highlight);\n}\n\n/* ===== Responsive ===== */\n@media (max-width: 1200px) {\n  .overview-row {\n    grid-template-columns: repeat(4, 1fr);\n  }\n  \n  .overview-card.hero {\n    grid-column: span 2;\n  }\n}\n\n@media (max-width: 1000px) {\n  .top-lists-section {\n    grid-template-columns: 1fr 1fr;\n  }\n  \n  .top-list:last-child {\n    grid-column: span 2;\n  }\n  \n  .overview-row {\n    grid-template-columns: repeat(2, 1fr);\n  }\n  \n  .overview-card.hero {\n    grid-column: span 2;\n  }\n}\n\n@media (max-width: 700px) {\n  .stats-page {\n    padding: 24px;\n  }\n  \n  .top-lists-section {\n    grid-template-columns: 1fr;\n  }\n  \n  .top-list:last-child {\n    grid-column: span 1;\n  }\n  \n  .top-list {\n    min-height: auto;\n  }\n  \n  .overview-row {\n    grid-template-columns: 1fr;\n  }\n  \n  .overview-card.hero {\n    grid-column: span 1;\n  }\n  \n  .overview-secondary {\n    flex-wrap: wrap;\n  }\n  \n  .recent-card {\n    width: 120px;\n  }\n  \n  .recent-art {\n    width: 120px;\n    height: 120px;\n  }\n}\n';
-
-  // src/app/styles.ts
-  function injectStyles() {
-    const existing = document.getElementById("listening-stats-styles");
-    if (existing) existing.remove();
-    const styleEl = document.createElement("style");
-    styleEl.id = "listening-stats-styles";
-    styleEl.textContent = styles_default;
-    document.head.appendChild(styleEl);
-  }
-
   // src/app/icons.ts
   var Icons = {
     heart: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M1.69 2A4.582 4.582 0 018 2.023 4.583 4.583 0 0114.31 2a4.583 4.583 0 010 6.496L8 14.153l-6.31-5.657A4.583 4.583 0 011.69 2m6.31 10.06l5.715-5.12a3.087 3.087 0 00-4.366-4.371L8 3.839l-1.35-1.27a3.087 3.087 0 00-4.366 4.37z"/></svg>',
@@ -989,6 +976,19 @@ var ListeningStatsApp = (() => {
     music: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>',
     album: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z"/></svg>'
   };
+
+  // src/app/styles.css
+  var styles_default = '/* Listening Stats - Main Styles */\n\n/* ===== Sidebar Icon ===== */\n[href="/listening-stats"] svg {\n  fill: currentColor !important;\n  color: var(--text-subdued) !important;\n}\n[href="/listening-stats"]:hover svg,\n[href="/listening-stats"][aria-current="page"] svg {\n  color: var(--text-base) !important;\n}\n\n/* ===== Page Layout ===== */\n.stats-page {\n  padding: 32px 48px;\n  max-width: 1400px;\n  margin: 0 auto;\n}\n\n/* ===== Header ===== */\n.stats-header {\n  margin-bottom: 24px;\n}\n\n.stats-title {\n  font-size: 2.5rem;\n  font-weight: 700;\n  margin: 0 0 4px 0;\n  letter-spacing: -0.5px;\n}\n\n.stats-subtitle {\n  font-size: 14px;\n  color: var(--text-subdued);\n  margin: 0;\n}\n\n/* ===== Period Tabs (inside hero card) ===== */\n.period-tabs {\n  display: inline-flex;\n  background: rgba(0, 0, 0, 0.15);\n  border-radius: 8px;\n  padding: 4px;\n  margin-top: 16px;\n  gap: 2px;\n}\n\n.period-tab {\n  padding: 8px 16px;\n  border: none;\n  background: transparent;\n  color: rgba(0, 0, 0, 0.6);\n  font-size: 13px;\n  font-weight: 600;\n  border-radius: 6px;\n  cursor: pointer;\n  transition: all 0.2s ease;\n}\n\n.period-tab:hover {\n  color: rgba(0, 0, 0, 0.8);\n  background: rgba(0, 0, 0, 0.1);\n}\n\n.period-tab.active {\n  background: rgba(0, 0, 0, 0.2);\n  color: #000;\n}\n\n/* ===== Overview Cards Row ===== */\n.overview-row {\n  display: grid;\n  grid-template-columns: 1fr 1fr 1fr;\n  gap: 16px;\n  margin-bottom: 32px;\n}\n\n.overview-card-list {\n  display: grid;\n  grid-template-columns: 1fr 1fr;\n  grid-template-rows: 1fr 1fr;\n  gap: 16px;\n  grid-column: span 2;\n}\n\n.overview-card {\n  background: var(--background-tinted-base);\n  border-radius: 12px;\n  padding: 20px;\n  display: flex;\n  flex-direction: column;\n}\n\n.overview-card.hero {\n  background: linear-gradient(135deg, #1db954 0%, #1a9f4a 100%);\n  color: #000;\n}\n\n.overview-value {\n  font-size: 2rem;\n  font-weight: 800;\n  line-height: 1;\n  margin-bottom: 4px;\n}\n\n.overview-card.hero .overview-value {\n  font-size: 2.5rem;\n}\n\n.overview-label {\n  font-size: 11px;\n  font-weight: 600;\n  text-transform: uppercase;\n  letter-spacing: 0.5px;\n  opacity: 0.7;\n}\n\n.overview-card.hero .overview-label {\n  opacity: 0.85;\n}\n\n.overview-secondary {\n  display: flex;\n  gap: 24px;\n  margin-top: auto;\n  padding-top: 16px;\n  border-top: 1px solid rgba(0, 0, 0, 0.1);\n}\n\n.overview-stat {\n  display: flex;\n  flex-direction: column;\n}\n\n.overview-stat-value {\n  font-size: 1.25rem;\n  font-weight: 700;\n}\n\n.overview-stat-label {\n  font-size: 10px;\n  text-transform: uppercase;\n  opacity: 0.6;\n}\n\n/* Colored stats */\n.overview-card .stat-colored {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n}\n\n.stat-icon {\n  width: 40px;\n  height: 40px;\n  border-radius: 10px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  flex-shrink: 0;\n}\n\n.stat-icon svg {\n  width: 20px;\n  height: 20px;\n}\n\n.stat-icon.green {\n  background: rgba(29, 185, 84, 0.15);\n  color: #1db954;\n}\n.stat-icon.orange {\n  background: rgba(243, 156, 18, 0.15);\n  color: #f39c12;\n}\n.stat-icon.purple {\n  background: rgba(155, 89, 182, 0.15);\n  color: #9b59b6;\n}\n.stat-icon.red {\n  background: rgba(231, 76, 60, 0.15);\n  color: #e74c3c;\n}\n\n.stat-text .overview-value {\n  font-size: 1.5rem;\n}\n\n.stat-text .overview-value.green {\n  color: #1db954;\n}\n.stat-text .overview-value.orange {\n  color: #f39c12;\n}\n.stat-text .overview-value.purple {\n  color: #9b59b6;\n}\n.stat-text .overview-value.red {\n  color: #e74c3c;\n}\n\n/* ===== Top Lists Section ===== */\n.top-lists-section {\n  display: grid;\n  grid-template-columns: repeat(3, 1fr);\n  gap: 24px;\n  margin-bottom: 32px;\n}\n\n.top-list {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  min-height: 400px;\n  display: flex;\n  flex-direction: column;\n}\n\n.top-list-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  margin-bottom: 20px;\n}\n\n.top-list-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.top-list-title svg {\n  width: 20px;\n  height: 20px;\n  color: var(--text-subdued);\n}\n\n/* ===== Item List ===== */\n.item-list {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n  flex: 1;\n}\n\n.item-row {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 10px 12px;\n  margin: 0 -12px;\n  border-radius: 8px;\n  cursor: pointer;\n  transition: background 0.15s ease;\n}\n\n.item-row:hover {\n  background: rgba(255, 255, 255, 0.07);\n}\n\n.item-rank {\n  width: 24px;\n  font-size: 14px;\n  font-weight: 700;\n  text-align: center;\n  flex-shrink: 0;\n  color: var(--text-subdued);\n}\n\n.item-rank.gold {\n  color: #f1c40f;\n  text-shadow: 0 0 10px rgba(241, 196, 15, 0.3);\n}\n.item-rank.silver {\n  color: #bdc3c7;\n}\n.item-rank.bronze {\n  color: #cd6133;\n}\n\n.item-art {\n  width: 48px;\n  height: 48px;\n  border-radius: 6px;\n  object-fit: cover;\n  background: var(--background-elevated-base);\n  flex-shrink: 0;\n}\n\n.item-art.round {\n  border-radius: 50%;\n}\n\n.item-info {\n  flex: 1;\n  min-width: 0;\n}\n\n.item-name {\n  font-size: 14px;\n  font-weight: 500;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  margin-bottom: 2px;\n}\n\n.item-meta {\n  font-size: 12px;\n  color: var(--text-subdued);\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.item-stats {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n  flex-shrink: 0;\n}\n\n.item-plays {\n  font-size: 13px;\n  font-weight: 600;\n  color: var(--text-base);\n}\n\n.item-time {\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n/* Heart button */\n.heart-btn {\n  background: none;\n  border: none;\n  padding: 6px;\n  cursor: pointer;\n  color: var(--text-subdued);\n  display: flex;\n  align-items: center;\n  border-radius: 50%;\n  transition: all 0.15s ease;\n  flex-shrink: 0;\n}\n\n.heart-btn:hover {\n  color: var(--text-base);\n  background: rgba(255, 255, 255, 0.1);\n}\n\n.heart-btn.liked {\n  color: #1db954;\n}\n\n.heart-btn svg {\n  width: 18px;\n  height: 18px;\n}\n\n/* ===== Activity Chart Section ===== */\n.activity-section {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  margin-bottom: 32px;\n}\n\n.activity-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  margin-bottom: 20px;\n}\n\n.activity-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n}\n\n.activity-peak {\n  font-size: 13px;\n  color: var(--text-subdued);\n}\n\n.activity-peak strong {\n  color: #1db954;\n}\n\n.activity-chart {\n  height: 80px;\n  display: flex;\n  align-items: flex-end;\n  gap: 3px;\n}\n\n.activity-bar {\n  flex: 1;\n  background: rgba(255, 255, 255, 0.08);\n  border-radius: 3px 3px 0 0;\n  min-height: 4px;\n  transition: background 0.15s ease;\n  cursor: pointer;\n  position: relative;\n}\n\n.activity-bar.peak {\n  background: #1db954;\n}\n\n.activity-bar:hover {\n  background: #1db954;\n}\n\n.activity-bar-tooltip {\n  position: absolute;\n  bottom: calc(100% + 8px);\n  left: 50%;\n  transform: translateX(-50%);\n  background: var(--background-elevated-base);\n  padding: 6px 10px;\n  border-radius: 6px;\n  font-size: 11px;\n  white-space: nowrap;\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.15s ease;\n  z-index: 10;\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);\n}\n\n.activity-bar:hover .activity-bar-tooltip {\n  opacity: 1;\n}\n\n.chart-labels {\n  display: flex;\n  justify-content: space-between;\n  font-size: 10px;\n  color: var(--text-subdued);\n  margin-top: 10px;\n  padding: 0 2px;\n}\n\n/* ===== Recently Played ===== */\n.recent-section {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  margin-bottom: 32px;\n}\n\n.recent-header {\n  margin-bottom: 20px;\n}\n\n.recent-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n}\n\n.recent-scroll {\n  display: flex;\n  gap: 16px;\n  overflow-x: auto;\n  padding-bottom: 8px;\n  margin: 0 -24px;\n  padding: 0 24px;\n  scrollbar-width: thin;\n  scrollbar-color: var(--background-tinted-highlight) transparent;\n}\n\n.recent-scroll::-webkit-scrollbar {\n  height: 6px;\n}\n\n.recent-scroll::-webkit-scrollbar-track {\n  background: transparent;\n}\n\n.recent-scroll::-webkit-scrollbar-thumb {\n  background: var(--background-tinted-highlight);\n  border-radius: 3px;\n}\n\n.recent-card {\n  flex-shrink: 0;\n  width: 140px;\n  cursor: pointer;\n  transition: transform 0.15s ease;\n}\n\n.recent-card:hover {\n  transform: translateY(-4px);\n}\n\n.recent-card:hover .recent-art {\n  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);\n}\n\n.recent-art {\n  width: 140px;\n  height: 140px;\n  border-radius: 8px;\n  object-fit: cover;\n  background: var(--background-elevated-base);\n  margin-bottom: 10px;\n  transition: box-shadow 0.15s ease;\n}\n\n.recent-name {\n  font-size: 13px;\n  font-weight: 500;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  margin-bottom: 2px;\n}\n\n.recent-meta {\n  font-size: 12px;\n  color: var(--text-subdued);\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n/* ===== Footer ===== */\n.stats-footer {\n  padding-top: 20px;\n  border-top: 1px solid var(--background-tinted-highlight);\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: 12px;\n}\n\n.footer-left {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n}\n\n.settings-toggle {\n  background: none;\n  border: none;\n  color: var(--text-subdued);\n  font-size: 12px;\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  padding: 8px 12px;\n  border-radius: 6px;\n  transition: all 0.15s ease;\n}\n\n.settings-toggle:hover {\n  background: var(--background-tinted-base);\n  color: var(--text-base);\n}\n\n.settings-toggle svg {\n  width: 14px;\n  height: 14px;\n}\n\n.footer-btn {\n  padding: 8px 14px;\n  background: var(--background-tinted-base);\n  border: none;\n  border-radius: 6px;\n  color: var(--text-subdued);\n  font-size: 12px;\n  font-weight: 500;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.footer-btn:hover {\n  background: var(--background-tinted-highlight);\n  color: var(--text-base);\n}\n\n.footer-btn.primary {\n  background: #1db954;\n  color: #000;\n}\n\n.footer-btn.primary:hover {\n  background: #1ed760;\n}\n\n.footer-btn.danger:hover {\n  background: #e74c3c;\n  color: #fff;\n}\n\n.version-text {\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n/* ===== Settings Panel ===== */\n.settings-panel {\n  margin-top: 16px;\n  padding: 20px;\n  background: var(--background-tinted-base);\n  border-radius: 12px;\n}\n\n.settings-row {\n  display: flex;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.api-status {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  margin-top: 14px;\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n.status-dot {\n  width: 8px;\n  height: 8px;\n  border-radius: 50%;\n}\n\n.status-dot.green {\n  background: #1db954;\n}\n.status-dot.red {\n  background: #e74c3c;\n}\n\n/* ===== Empty State ===== */\n.empty-state {\n  text-align: center;\n  padding: 100px 20px;\n}\n\n.empty-icon {\n  width: 80px;\n  height: 80px;\n  margin: 0 auto 20px;\n  color: var(--text-subdued);\n  opacity: 0.5;\n}\n\n.empty-icon svg {\n  width: 100%;\n  height: 100%;\n}\n\n.empty-title {\n  font-size: 24px;\n  font-weight: 600;\n  margin-bottom: 10px;\n}\n\n.empty-text {\n  color: var(--text-subdued);\n  font-size: 15px;\n}\n\n/* ===== Loading ===== */\n.loading {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  min-height: 400px;\n  color: var(--text-subdued);\n  font-size: 15px;\n}\n\n/* ===== Modal ===== */\n.modal-overlay {\n  position: fixed;\n  top: 0;\n  left: 0;\n  right: 0;\n  bottom: 0;\n  background: rgba(0, 0, 0, 0.75);\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  z-index: 1000;\n  backdrop-filter: blur(4px);\n}\n\n.modal-content {\n  background: var(--background-base);\n  border-radius: 16px;\n  padding: 28px;\n  max-width: 420px;\n  width: 90%;\n  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);\n}\n\n.modal-title {\n  font-size: 20px;\n  font-weight: 700;\n  margin: 0 0 4px;\n}\n\n.modal-subtitle {\n  font-size: 13px;\n  color: var(--text-subdued);\n  margin: 0 0 20px;\n}\n\n.modal-changelog {\n  background: var(--background-tinted-base);\n  border-radius: 8px;\n  padding: 14px;\n  font-size: 13px;\n  max-height: 160px;\n  overflow-y: auto;\n  margin-bottom: 20px;\n  white-space: pre-wrap;\n  line-height: 1.5;\n}\n\n.modal-actions {\n  display: flex;\n  gap: 10px;\n  justify-content: flex-end;\n}\n\n.modal-btn {\n  padding: 10px 20px;\n  border-radius: 20px;\n  border: none;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.modal-btn.primary {\n  background: #1db954;\n  color: #000;\n}\n\n.modal-btn.primary:hover {\n  background: #1ed760;\n}\n\n.modal-btn.secondary {\n  background: var(--background-tinted-highlight);\n  color: var(--text-base);\n}\n\n.modal-btn.secondary:hover {\n  background: var(--background-elevated-highlight);\n}\n\n/* ===== Responsive ===== */\n@media (max-width: 1200px) {\n  .overview-row {\n    grid-template-columns: 1fr 1fr;\n  }\n\n  .overview-card-list {\n    grid-column: span 1;\n  }\n}\n\n@media (max-width: 1000px) {\n  .top-lists-section {\n    grid-template-columns: 1fr;\n  }\n\n  .top-list {\n    width: 100%;\n  }\n\n  .overview-row {\n    grid-template-columns: 1fr;\n  }\n\n  .overview-card-list {\n    grid-column: span 1;\n  }\n}\n\n@media (max-width: 700px) {\n  .stats-page {\n    padding: 24px;\n  }\n\n  .top-lists-section {\n    grid-template-columns: 1fr;\n  }\n\n  .top-list {\n    min-height: auto;\n    width: 100%;\n  }\n\n  .overview-row {\n    grid-template-columns: 1fr;\n  }\n\n  .overview-card-list {\n    grid-column: span 1;\n  }\n\n  .overview-secondary {\n    flex-wrap: wrap;\n  }\n\n  .period-tabs {\n    flex-wrap: wrap;\n  }\n\n  .period-tab {\n    padding: 6px 12px;\n    font-size: 12px;\n  }\n\n  .recent-card {\n    width: 120px;\n  }\n\n  .recent-art {\n    width: 120px;\n    height: 120px;\n  }\n}\n';
+
+  // src/app/styles.ts
+  function injectStyles() {
+    const existing = document.getElementById("listening-stats-styles");
+    if (existing) existing.remove();
+    const styleEl = document.createElement("style");
+    styleEl.id = "listening-stats-styles";
+    styleEl.textContent = styles_default;
+    document.head.appendChild(styleEl);
+  }
 
   // src/app/utils.ts
   function navigateToUri(uri) {
@@ -1139,7 +1139,17 @@ var ListeningStatsApp = (() => {
       if (prev.period !== this.state.period) this.loadStats();
     }
     render() {
-      const { period, stats, loading, likedTracks, artistImages, updateInfo, showUpdateModal, showSettings, apiAvailable } = this.state;
+      const {
+        period,
+        stats,
+        loading,
+        likedTracks,
+        artistImages,
+        updateInfo,
+        showUpdateModal,
+        showSettings,
+        apiAvailable
+      } = this.state;
       const React = Spicetify.React;
       if (loading) {
         return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-page" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "loading" }, "Loading..."));
@@ -1154,23 +1164,86 @@ var ListeningStatsApp = (() => {
         p === "today" ? "Today" : p === "week" ? "This Week" : p === "month" ? "This Month" : "All Time"
       )));
       if (!stats || stats.trackCount === 0) {
-        return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-page" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-header" }, /* @__PURE__ */ Spicetify.React.createElement("h1", { className: "stats-title" }, "Listening Stats"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "stats-subtitle" }, "Your personal music analytics")), periodTabs, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "empty-state" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "empty-icon", dangerouslySetInnerHTML: { __html: Icons.headphones } }), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "empty-title" }, "No data for ", getPeriodDisplayName(period)), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "empty-text" }, "Start listening to see your stats!")));
+        return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-page" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-header" }, /* @__PURE__ */ Spicetify.React.createElement("h1", { className: "stats-title" }, "Listening Stats"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "stats-subtitle" }, "Your personal music analytics")), periodTabs, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "empty-state" }, /* @__PURE__ */ Spicetify.React.createElement(
+          "div",
+          {
+            className: "empty-icon",
+            dangerouslySetInnerHTML: { __html: Icons.headphones }
+          }
+        ), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "empty-title" }, "No data for ", getPeriodDisplayName(period)), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "empty-text" }, "Start listening to see your stats!")));
       }
       const payout = estimateArtistPayout(stats.trackCount);
-      return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-page" }, showUpdateModal && updateInfo && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-overlay", onClick: () => this.setState({ showUpdateModal: false }) }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-content", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-title" }, "Update Available"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-subtitle" }, "v", updateInfo.currentVersion, " \u2192 v", updateInfo.latestVersion), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-changelog" }, updateInfo.changelog), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-actions" }, /* @__PURE__ */ Spicetify.React.createElement("button", { className: "modal-btn secondary", onClick: () => this.setState({ showUpdateModal: false }) }, "Later"), updateInfo.downloadUrl && /* @__PURE__ */ Spicetify.React.createElement("button", { className: "modal-btn primary", onClick: () => {
-        downloadUpdate(updateInfo.downloadUrl);
-        this.setState({ showUpdateModal: false });
-      } }, "Download")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-header" }, /* @__PURE__ */ Spicetify.React.createElement("h1", { className: "stats-title" }, "Listening Stats"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "stats-subtitle" }, "Your personal music analytics")), periodTabs, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card hero" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value" }, formatDurationLong(stats.totalTimeMs)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Time Listened"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-secondary" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.trackCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Tracks")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.uniqueArtistCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Artists")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.uniqueTrackCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Unique")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-icon green", dangerouslySetInnerHTML: { __html: Icons.money } }), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value green" }, "$", payout), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Paid to Artists")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-icon orange", dangerouslySetInnerHTML: { __html: Icons.fire } }), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value orange" }, stats.streakDays), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Day Streak")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-icon purple", dangerouslySetInnerHTML: { __html: Icons.users } }), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, stats.newArtistsCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "New Artists"))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-lists-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.music } }), "Top Tracks")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topTracks.slice(0, TOP_ITEMS_COUNT).map((t, i) => /* @__PURE__ */ Spicetify.React.createElement("div", { key: t.trackUri, className: "item-row", onClick: () => navigateToUri(t.trackUri) }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: `item-rank ${getRankClass(i)}` }, i + 1), t.albumArt && /* @__PURE__ */ Spicetify.React.createElement("img", { src: t.albumArt, className: "item-art", alt: "" }), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-info" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-name" }, t.trackName), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-meta" }, t.artistName)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-stats" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-plays" }, t.playCount, " plays"), /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-time" }, formatDuration(t.totalTimeMs))), /* @__PURE__ */ Spicetify.React.createElement(
-        "button",
+      return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-page" }, showUpdateModal && updateInfo && /* @__PURE__ */ Spicetify.React.createElement(
+        "div",
         {
-          className: `heart-btn ${likedTracks.get(t.trackUri) ? "liked" : ""}`,
-          onClick: (e) => this.handleLikeToggle(t.trackUri, e),
-          dangerouslySetInnerHTML: { __html: likedTracks.get(t.trackUri) ? Icons.heartFilled : Icons.heart }
-        }
-      ))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.users } }), "Top Artists")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topArtists.slice(0, TOP_ITEMS_COUNT).map((a, i) => {
+          className: "modal-overlay",
+          onClick: () => this.setState({ showUpdateModal: false })
+        },
+        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-content", onClick: (e) => e.stopPropagation() }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-title" }, "Update Available"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-subtitle" }, "v", updateInfo.currentVersion, " \u2192 v", updateInfo.latestVersion), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-changelog" }, updateInfo.changelog), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-actions" }, /* @__PURE__ */ Spicetify.React.createElement(
+          "button",
+          {
+            className: "modal-btn secondary",
+            onClick: () => this.setState({ showUpdateModal: false })
+          },
+          "Later"
+        ), updateInfo.downloadUrl && /* @__PURE__ */ Spicetify.React.createElement(
+          "button",
+          {
+            className: "modal-btn primary",
+            onClick: () => {
+              downloadUpdate(updateInfo.downloadUrl);
+              this.setState({ showUpdateModal: false });
+            }
+          },
+          "Download"
+        )))
+      ), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-header" }, /* @__PURE__ */ Spicetify.React.createElement("h1", { className: "stats-title" }, "Listening Stats"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "stats-subtitle" }, "Your personal music analytics")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card hero" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value" }, formatDurationLong(stats.totalTimeMs)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Time Listened"), periodTabs, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-secondary" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.trackCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Tracks")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.uniqueArtistCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Artists")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.uniqueTrackCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Unique")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value green" }, "$", payout), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Paid to Artists")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value orange" }, stats.streakDays), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Day Streak")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, stats.newArtistsCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "New Artists")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value red" }, Math.floor(stats.skipRate * 100), "%"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Skip Rate")))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-lists-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.music } }), "Top Tracks")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topTracks.slice(0, TOP_ITEMS_COUNT).map((t, i) => /* @__PURE__ */ Spicetify.React.createElement(
+        "div",
+        {
+          key: t.trackUri,
+          className: "item-row",
+          onClick: () => navigateToUri(t.trackUri)
+        },
+        /* @__PURE__ */ Spicetify.React.createElement("span", { className: `item-rank ${getRankClass(i)}` }, i + 1),
+        t.albumArt && /* @__PURE__ */ Spicetify.React.createElement("img", { src: t.albumArt, className: "item-art", alt: "" }),
+        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-info" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-name" }, t.trackName), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-meta" }, t.artistName)),
+        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-stats" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-plays" }, t.playCount, " plays"), /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-time" }, formatDuration(t.totalTimeMs))),
+        /* @__PURE__ */ Spicetify.React.createElement(
+          "button",
+          {
+            className: `heart-btn ${likedTracks.get(t.trackUri) ? "liked" : ""}`,
+            onClick: (e) => this.handleLikeToggle(t.trackUri, e),
+            dangerouslySetInnerHTML: {
+              __html: likedTracks.get(t.trackUri) ? Icons.heartFilled : Icons.heart
+            }
+          }
+        )
+      )))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.users } }), "Top Artists")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topArtists.slice(0, TOP_ITEMS_COUNT).map((a, i) => {
         const img = artistImages.get(a.artistUri) || a.artistImage;
-        return /* @__PURE__ */ Spicetify.React.createElement("div", { key: a.artistUri || a.artistName, className: "item-row", onClick: () => a.artistUri && navigateToUri(a.artistUri) }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: `item-rank ${getRankClass(i)}` }, i + 1), img && /* @__PURE__ */ Spicetify.React.createElement("img", { src: img, className: "item-art round", alt: "" }), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-info" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-name" }, a.artistName), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-meta" }, a.playCount, " plays")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-stats" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-time" }, formatDuration(a.totalTimeMs))));
-      }))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.album } }), "Top Albums")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topAlbums.slice(0, TOP_ITEMS_COUNT).map((a, i) => /* @__PURE__ */ Spicetify.React.createElement("div", { key: a.albumUri, className: "item-row", onClick: () => navigateToUri(a.albumUri) }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: `item-rank ${getRankClass(i)}` }, i + 1), a.albumArt && /* @__PURE__ */ Spicetify.React.createElement("img", { src: a.albumArt, className: "item-art", alt: "" }), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-info" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-name" }, a.albumName), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-meta" }, a.artistName)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-stats" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-plays" }, a.playCount, " plays"), /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-time" }, formatDuration(a.totalTimeMs)))))))), stats.hourlyDistribution.some((h) => h > 0) && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "activity-title" }, "Activity by Hour"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-peak" }, "Peak: ", /* @__PURE__ */ Spicetify.React.createElement("strong", null, formatHour(stats.peakHour)))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-chart" }, stats.hourlyDistribution.map((val, hr) => {
+        return /* @__PURE__ */ Spicetify.React.createElement(
+          "div",
+          {
+            key: a.artistUri || a.artistName,
+            className: "item-row",
+            onClick: () => a.artistUri && navigateToUri(a.artistUri)
+          },
+          /* @__PURE__ */ Spicetify.React.createElement("span", { className: `item-rank ${getRankClass(i)}` }, i + 1),
+          img && /* @__PURE__ */ Spicetify.React.createElement("img", { src: img, className: "item-art round", alt: "" }),
+          /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-info" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-name" }, a.artistName), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-meta" }, a.playCount, " plays")),
+          /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-stats" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-time" }, formatDuration(a.totalTimeMs)))
+        );
+      }))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.album } }), "Top Albums")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topAlbums.slice(0, TOP_ITEMS_COUNT).map((a, i) => /* @__PURE__ */ Spicetify.React.createElement(
+        "div",
+        {
+          key: a.albumUri,
+          className: "item-row",
+          onClick: () => navigateToUri(a.albumUri)
+        },
+        /* @__PURE__ */ Spicetify.React.createElement("span", { className: `item-rank ${getRankClass(i)}` }, i + 1),
+        a.albumArt && /* @__PURE__ */ Spicetify.React.createElement("img", { src: a.albumArt, className: "item-art", alt: "" }),
+        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-info" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-name" }, a.albumName), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-meta" }, a.artistName)),
+        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-stats" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-plays" }, a.playCount, " plays"), /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-time" }, formatDuration(a.totalTimeMs)))
+      ))))), stats.hourlyDistribution.some((h) => h > 0) && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "activity-title" }, "Activity by Hour"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-peak" }, "Peak: ", /* @__PURE__ */ Spicetify.React.createElement("strong", null, formatHour(stats.peakHour)))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-chart" }, stats.hourlyDistribution.map((val, hr) => {
         const max = Math.max(...stats.hourlyDistribution, 1);
         const h = val > 0 ? Math.max(val / max * 100, 5) : 0;
         return /* @__PURE__ */ Spicetify.React.createElement(
@@ -1182,7 +1255,17 @@ var ListeningStatsApp = (() => {
           },
           /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-bar-tooltip" }, formatHour(hr), ": ", formatMinutes(val))
         );
-      })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "chart-labels" }, /* @__PURE__ */ Spicetify.React.createElement("span", null, "12am"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "6am"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "12pm"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "6pm"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "12am"))), stats.recentTracks.length > 0 && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "recent-title" }, "Recently Played")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-scroll" }, stats.recentTracks.slice(0, 12).map((t) => /* @__PURE__ */ Spicetify.React.createElement("div", { key: `${t.trackUri}-${t.startedAt}`, className: "recent-card", onClick: () => navigateToUri(t.trackUri) }, t.albumArt ? /* @__PURE__ */ Spicetify.React.createElement("img", { src: t.albumArt, className: "recent-art", alt: "" }) : /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-art" }), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-name" }, t.trackName), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-meta" }, t.artistName))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-footer" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "footer-left" }, /* @__PURE__ */ Spicetify.React.createElement(
+      })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "chart-labels" }, /* @__PURE__ */ Spicetify.React.createElement("span", null, "12am"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "6am"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "12pm"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "6pm"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "12am"))), stats.recentTracks.length > 0 && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "recent-title" }, "Recently Played")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-scroll" }, stats.recentTracks.slice(0, 12).map((t) => /* @__PURE__ */ Spicetify.React.createElement(
+        "div",
+        {
+          key: `${t.trackUri}-${t.startedAt}`,
+          className: "recent-card",
+          onClick: () => navigateToUri(t.trackUri)
+        },
+        t.albumArt ? /* @__PURE__ */ Spicetify.React.createElement("img", { src: t.albumArt, className: "recent-art", alt: "" }) : /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-art" }),
+        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-name" }, t.trackName),
+        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-meta" }, t.artistName)
+      )))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-footer" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "footer-left" }, /* @__PURE__ */ Spicetify.React.createElement(
         "button",
         {
           className: "settings-toggle",
@@ -1198,20 +1281,53 @@ var ListeningStatsApp = (() => {
         },
         "Update v",
         updateInfo.latestVersion
-      )), /* @__PURE__ */ Spicetify.React.createElement("span", { className: "version-text" }, "v", VERSION)), showSettings && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-panel" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-row" }, /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn", onClick: () => this.loadStats() }, "Refresh"), /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn", onClick: async () => {
-        await runBackgroundEnrichment(true);
-        this.loadStats();
-        Spicetify.showNotification("Data enriched");
-      } }, "Enrich Data"), /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn", onClick: () => {
-        resetRateLimit();
-        clearApiCaches();
-        Spicetify.showNotification("Cache cleared");
-      } }, "Clear Cache"), /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn", onClick: () => this.checkUpdates() }, "Check Updates"), /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn danger", onClick: async () => {
-        if (confirm("Delete all listening data?")) {
-          await clearAllData();
-          this.setState({ stats: null });
+      )), /* @__PURE__ */ Spicetify.React.createElement("span", { className: "version-text" }, "v", VERSION)), showSettings && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-panel" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-row" }, /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn", onClick: () => this.loadStats() }, "Refresh"), /* @__PURE__ */ Spicetify.React.createElement(
+        "button",
+        {
+          className: "footer-btn",
+          onClick: async () => {
+            await runBackgroundEnrichment(true);
+            this.loadStats();
+            Spicetify.showNotification("Data enriched");
+          }
+        },
+        "Enrich Data"
+      ), /* @__PURE__ */ Spicetify.React.createElement(
+        "button",
+        {
+          className: "footer-btn",
+          onClick: () => {
+            resetRateLimit();
+            clearApiCaches();
+            Spicetify.showNotification("Cache cleared");
+          }
+        },
+        "Clear Cache"
+      ), /* @__PURE__ */ Spicetify.React.createElement(
+        "button",
+        {
+          className: "footer-btn",
+          onClick: () => this.checkUpdates()
+        },
+        "Check Updates"
+      ), /* @__PURE__ */ Spicetify.React.createElement(
+        "button",
+        {
+          className: "footer-btn danger",
+          onClick: async () => {
+            if (confirm("Delete all listening data?")) {
+              await clearAllData();
+              this.setState({ stats: null });
+            }
+          }
+        },
+        "Reset Data"
+      )), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "api-status" }, /* @__PURE__ */ Spicetify.React.createElement(
+        "span",
+        {
+          className: `status-dot ${apiAvailable ? "green" : "red"}`
         }
-      } }, "Reset Data")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "api-status" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: `status-dot ${apiAvailable ? "green" : "red"}` }), "API: ", apiAvailable ? "Available" : `Limited (${Math.ceil(getRateLimitRemaining() / 60)}m)`)));
+      ), "API:", " ", apiAvailable ? "Available" : `Limited (${Math.ceil(getRateLimitRemaining() / 60)}m)`)));
     }
   };
   var index_default = StatsPage;

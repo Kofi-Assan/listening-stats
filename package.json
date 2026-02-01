@@ -1,6 +1,6 @@
 {
   "name": "listening-stats",
-  "version": "1.0.3",
+  "version": "1.0.36",
   "description": "Real-time listening statistics dashboard for Spotify",
   "main": "dist/listening-stats.js",
   "scripts": {
@@ -21,7 +21,7 @@
     "extension",
     "statistics"
   ],
-  "author": "xndr",
+  "author": "Xndr2",
   "license": "MIT",
   "type": "module",
   "dependencies": {

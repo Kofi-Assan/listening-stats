@@ -35,45 +35,52 @@
   margin: 0;
 }
 
-/* ===== Period Tabs ===== */
+/* ===== Period Tabs (inside hero card) ===== */
 .period-tabs {
   display: inline-flex;
-  background: var(--background-tinted-base);
+  background: rgba(0, 0, 0, 0.15);
   border-radius: 8px;
   padding: 4px;
-  margin-bottom: 28px;
+  margin-top: 16px;
   gap: 2px;
 }
 
 .period-tab {
-  padding: 10px 20px;
+  padding: 8px 16px;
   border: none;
   background: transparent;
-  color: var(--text-subdued);
-  font-size: 14px;
-  font-weight: 500;
+  color: rgba(0, 0, 0, 0.6);
+  font-size: 13px;
+  font-weight: 600;
   border-radius: 6px;
   cursor: pointer;
   transition: all 0.2s ease;
 }
 
 .period-tab:hover {
-  color: var(--text-base);
-  background: rgba(255, 255, 255, 0.05);
+  color: rgba(0, 0, 0, 0.8);
+  background: rgba(0, 0, 0, 0.1);
 }
 
 .period-tab.active {
-  background: var(--background-elevated-base);
-  color: var(--text-base);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  background: rgba(0, 0, 0, 0.2);
+  color: #000;
 }
 
 /* ===== Overview Cards Row ===== */
 .overview-row {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 16px;
   margin-bottom: 32px;
+}
+
+.overview-card-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 16px;
+  grid-column: span 2;
 }
 
 .overview-card {
@@ -85,7 +92,6 @@
 }
 
 .overview-card.hero {
-  grid-column: span 2;
   background: linear-gradient(135deg, #1db954 0%, #1a9f4a 100%);
   color: #000;
 }
@@ -159,19 +165,39 @@
   height: 20px;
 }
 
-.stat-icon.green { background: rgba(29, 185, 84, 0.15); color: #1db954; }
-.stat-icon.orange { background: rgba(243, 156, 18, 0.15); color: #f39c12; }
-.stat-icon.purple { background: rgba(155, 89, 182, 0.15); color: #9b59b6; }
-.stat-icon.red { background: rgba(231, 76, 60, 0.15); color: #e74c3c; }
+.stat-icon.green {
+  background: rgba(29, 185, 84, 0.15);
+  color: #1db954;
+}
+.stat-icon.orange {
+  background: rgba(243, 156, 18, 0.15);
+  color: #f39c12;
+}
+.stat-icon.purple {
+  background: rgba(155, 89, 182, 0.15);
+  color: #9b59b6;
+}
+.stat-icon.red {
+  background: rgba(231, 76, 60, 0.15);
+  color: #e74c3c;
+}
 
 .stat-text .overview-value {
   font-size: 1.5rem;
 }
 
-.stat-text .overview-value.green { color: #1db954; }
-.stat-text .overview-value.orange { color: #f39c12; }
-.stat-text .overview-value.purple { color: #9b59b6; }
-.stat-text .overview-value.red { color: #e74c3c; }
+.stat-text .overview-value.green {
+  color: #1db954;
+}
+.stat-text .overview-value.orange {
+  color: #f39c12;
+}
+.stat-text .overview-value.purple {
+  color: #9b59b6;
+}
+.stat-text .overview-value.red {
+  color: #e74c3c;
+}
 
 /* ===== Top Lists Section ===== */
 .top-lists-section {
@@ -244,9 +270,16 @@
   color: var(--text-subdued);
 }
 
-.item-rank.gold { color: #f1c40f; text-shadow: 0 0 10px rgba(241, 196, 15, 0.3); }
-.item-rank.silver { color: #bdc3c7; }
-.item-rank.bronze { color: #cd6133; }
+.item-rank.gold {
+  color: #f1c40f;
+  text-shadow: 0 0 10px rgba(241, 196, 15, 0.3);
+}
+.item-rank.silver {
+  color: #bdc3c7;
+}
+.item-rank.bronze {
+  color: #cd6133;
+}
 
 .item-art {
   width: 48px;
@@ -605,8 +638,12 @@
   border-radius: 50%;
 }
 
-.status-dot.green { background: #1db954; }
-.status-dot.red { background: #e74c3c; }
+.status-dot.green {
+  background: #1db954;
+}
+.status-dot.red {
+  background: #e74c3c;
+}
 
 /* ===== Empty State ===== */
 .empty-state {
@@ -733,29 +770,29 @@
 /* ===== Responsive ===== */
 @media (max-width: 1200px) {
   .overview-row {
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: 1fr 1fr;
   }
-  
-  .overview-card.hero {
-    grid-column: span 2;
+
+  .overview-card-list {
+    grid-column: span 1;
   }
 }
 
 @media (max-width: 1000px) {
   .top-lists-section {
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
   }
-  
-  .top-list:last-child {
-    grid-column: span 2;
+
+  .top-list {
+    width: 100%;
   }
-  
+
   .overview-row {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: 1fr;
   }
-  
-  .overview-card.hero {
-    grid-column: span 2;
+
+  .overview-card-list {
+    grid-column: span 1;
   }
 }
 
@@ -763,35 +800,41 @@
   .stats-page {
     padding: 24px;
   }
-  
+
   .top-lists-section {
     grid-template-columns: 1fr;
   }
-  
-  .top-list:last-child {
-    grid-column: span 1;
-  }
-  
+
   .top-list {
     min-height: auto;
+    width: 100%;
   }
-  
+
   .overview-row {
     grid-template-columns: 1fr;
   }
-  
-  .overview-card.hero {
+
+  .overview-card-list {
     grid-column: span 1;
   }
-  
+
   .overview-secondary {
     flex-wrap: wrap;
   }
-  
+
+  .period-tabs {
+    flex-wrap: wrap;
+  }
+
+  .period-tab {
+    padding: 6px 12px;
+    font-size: 12px;
+  }
+
   .recent-card {
     width: 120px;
   }
-  
+
   .recent-art {
     width: 120px;
     height: 120px;

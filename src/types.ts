@@ -1,13 +1,13 @@
 // Audio features from Spotify API
 export interface AudioFeatures {
-  energy: number;          // 0-1, intensity and activity
-  valence: number;         // 0-1, musical positiveness (mood)
-  danceability: number;    // 0-1, how suitable for dancing
-  tempo: number;           // BPM
-  acousticness: number;    // 0-1, acoustic vs electronic
+  energy: number; // 0-1, intensity and activity
+  valence: number; // 0-1, musical positiveness (mood)
+  danceability: number; // 0-1, how suitable for dancing
+  tempo: number; // BPM
+  acousticness: number; // 0-1, acoustic vs electronic
   instrumentalness: number; // 0-1, vocals vs instrumental
-  speechiness: number;     // 0-1, presence of spoken words
-  liveness: number;        // 0-1, presence of audience in recording
+  speechiness: number; // 0-1, presence of spoken words
+  liveness: number; // 0-1, presence of audience in recording
 }
 
 // Play event stored in IndexedDB
@@ -48,7 +48,12 @@ export interface TrackInfo {
 }
 
 // Mood insight based on valence
-export type MoodCategory = 'happy' | 'energetic' | 'chill' | 'melancholic' | 'mixed';
+export type MoodCategory =
+  | "happy"
+  | "energetic"
+  | "chill"
+  | "melancholic"
+  | "mixed";
 
 // Audio feature analysis result (like harbassan's stats approach)
 export interface AudioAnalysis {
@@ -93,7 +98,7 @@ export interface ListeningStats {
     totalTimeMs: number;
   }>;
   hourlyDistribution: number[];
-  peakHour: number;                // Hour with most listening (0-23)
+  peakHour: number; // Hour with most listening (0-23)
   recentTracks: PlayEvent[];
   // Genre distribution (genre -> frequency count)
   genres: Record<string, number>;
@@ -103,17 +108,17 @@ export interface ListeningStats {
   // Release year distribution (year -> frequency count)
   releaseYears: Record<string, number>;
   // Legacy fields for mood badge
-  averageMood: number | null;      // Average valence 0-1
-  averageEnergy: number | null;    // Average energy 0-1
+  averageMood: number | null; // Average valence 0-1
+  averageEnergy: number | null; // Average energy 0-1
   moodCategory: MoodCategory;
-  danceability: number | null;     // Average danceability 0-1
+  danceability: number | null; // Average danceability 0-1
   // Insights
-  streakDays: number;              // Consecutive days with listening
-  newArtistsCount: number;         // First-time artists in this period
-  newTracksCount: number;          // First-time tracks in this period
-  avgSessionLength: number;        // Average listening session in ms
-  skipRate: number;                // % of tracks played < 30s (0-1)
-  listenedDays: number;            // Number of unique days with activity
+  streakDays: number; // Consecutive days with listening
+  newArtistsCount: number; // First-time artists in this period
+  newTracksCount: number; // First-time tracks in this period
+  avgSessionLength: number; // Average listening session in ms
+  skipRate: number; // % of tracks played < 30s (0-1)
+  listenedDays: number; // Number of unique days with activity
 }
 
-export type TimePeriod = 'today' | 'week' | 'month' | 'allTime';
+export type TimePeriod = "today" | "week" | "month" | "allTime";

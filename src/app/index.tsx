@@ -1,22 +1,38 @@
 // Main Stats Page Component - Rebuilt UI
-import { calculateStats, formatDuration, formatDurationLong, getPeriodDisplayName } from '../services/stats';
-import { clearAllData } from '../services/storage';
-import { runBackgroundEnrichment } from '../services/tracker';
-import { isApiAvailable, getRateLimitRemaining, resetRateLimit, clearApiCaches } from '../services/spotify-api';
-import { checkForUpdates, shouldCheckForUpdate, getCurrentVersion, downloadUpdate, UpdateInfo } from '../services/updater';
-import { ListeningStats, TimePeriod } from '../types';
-import { injectStyles } from './styles';
-import { Icons } from './icons';
-import { 
-  navigateToUri, 
-  toggleLike, 
-  checkLikedTracks, 
-  fetchArtistImages, 
-  formatHour, 
-  formatMinutes,
+import {
+  clearApiCaches,
+  getRateLimitRemaining,
+  isApiAvailable,
+  resetRateLimit,
+} from "../services/spotify-api";
+import {
+  calculateStats,
+  formatDuration,
+  formatDurationLong,
+  getPeriodDisplayName,
+} from "../services/stats";
+import { clearAllData } from "../services/storage";
+import { runBackgroundEnrichment } from "../services/tracker";
+import {
+  checkForUpdates,
+  downloadUpdate,
+  getCurrentVersion,
+  shouldCheckForUpdate,
+  UpdateInfo,
+} from "../services/updater";
+import { ListeningStats, TimePeriod } from "../types";
+import { Icons } from "./icons";
+import { injectStyles } from "./styles";
+import {
+  checkLikedTracks,
   estimateArtistPayout,
-  getRankClass 
-} from './utils';
+  fetchArtistImages,
+  formatHour,
+  formatMinutes,
+  getRankClass,
+  navigateToUri,
+  toggleLike,
+} from "./utils";
 
 const VERSION = getCurrentVersion();
 const TOP_ITEMS_COUNT = 6;
@@ -40,7 +56,7 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
   constructor(props: {}) {
     super(props);
     this.state = {
-      period: 'today',
+      period: "today",
       stats: null,
       loading: true,
       likedTracks: new Map(),
@@ -56,9 +72,9 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
   componentDidMount() {
     injectStyles();
     this.loadStats();
-    
+
     this.pollInterval = window.setInterval(() => {
-      const ts = localStorage.getItem('listening-stats:lastUpdate');
+      const ts = localStorage.getItem("listening-stats:lastUpdate");
       if (ts) {
         const t = parseInt(ts, 10);
         if (t > this.state.lastUpdateTimestamp) {
@@ -68,7 +84,7 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
       }
       this.setState({ apiAvailable: isApiAvailable() });
     }, 2000);
-    
+
     if (shouldCheckForUpdate()) {
       this.checkUpdates();
     }
@@ -92,20 +108,20 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
     try {
       const data = await calculateStats(this.state.period);
       this.setState({ stats: data, loading: false });
-      
+
       if (data.topTracks.length > 0) {
-        const uris = data.topTracks.map(t => t.trackUri);
+        const uris = data.topTracks.map((t) => t.trackUri);
         const liked = await checkLikedTracks(uris);
         this.setState({ likedTracks: liked });
       }
-      
+
       if (data.topArtists.length > 0) {
-        const uris = data.topArtists.map(a => a.artistUri).filter(Boolean);
+        const uris = data.topArtists.map((a) => a.artistUri).filter(Boolean);
         const images = await fetchArtistImages(uris);
         this.setState({ artistImages: images });
       }
     } catch (e) {
-      console.error('[ListeningStats] Load failed:', e);
+      console.error("[ListeningStats] Load failed:", e);
       this.setState({ loading: false });
     }
   };
@@ -120,22 +136,42 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
   };
 
   render() {
-    const { period, stats, loading, likedTracks, artistImages, updateInfo, showUpdateModal, showSettings, apiAvailable } = this.state;
+    const {
+      period,
+      stats,
+      loading,
+      likedTracks,
+      artistImages,
+      updateInfo,
+      showUpdateModal,
+      showSettings,
+      apiAvailable,
+    } = this.state;
     const React = Spicetify.React;
 
     if (loading) {
-      return <div className="stats-page"><div className="loading">Loading...</div></div>;
+      return (
+        <div className="stats-page">
+          <div className="loading">Loading...</div>
+        </div>
+      );
     }
 
     const periodTabs = (
       <div className="period-tabs">
-        {(['today', 'week', 'month', 'allTime'] as TimePeriod[]).map(p => (
-          <button 
-            key={p} 
-            className={`period-tab ${period === p ? 'active' : ''}`} 
+        {(["today", "week", "month", "allTime"] as TimePeriod[]).map((p) => (
+          <button
+            key={p}
+            className={`period-tab ${period === p ? "active" : ""}`}
             onClick={() => this.setState({ period: p })}
           >
-            {p === 'today' ? 'Today' : p === 'week' ? 'This Week' : p === 'month' ? 'This Month' : 'All Time'}
+            {p === "today"
+              ? "Today"
+              : p === "week"
+                ? "This Week"
+                : p === "month"
+                  ? "This Month"
+                  : "All Time"}
           </button>
         ))}
       </div>
@@ -151,8 +187,13 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
           </div>
           {periodTabs}
           <div className="empty-state">
-            <div className="empty-icon" dangerouslySetInnerHTML={{ __html: Icons.headphones }} />
-            <div className="empty-title">No data for {getPeriodDisplayName(period)}</div>
+            <div
+              className="empty-icon"
+              dangerouslySetInnerHTML={{ __html: Icons.headphones }}
+            />
+            <div className="empty-title">
+              No data for {getPeriodDisplayName(period)}
+            </div>
             <p className="empty-text">Start listening to see your stats!</p>
           </div>
         </div>
@@ -165,15 +206,31 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
       <div className="stats-page">
         {/* Update Modal */}
         {showUpdateModal && updateInfo && (
-          <div className="modal-overlay" onClick={() => this.setState({ showUpdateModal: false })}>
-            <div className="modal-content" onClick={e => e.stopPropagation()}>
+          <div
+            className="modal-overlay"
+            onClick={() => this.setState({ showUpdateModal: false })}
+          >
+            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
               <div className="modal-title">Update Available</div>
-              <div className="modal-subtitle">v{updateInfo.currentVersion} → v{updateInfo.latestVersion}</div>
+              <div className="modal-subtitle">
+                v{updateInfo.currentVersion} → v{updateInfo.latestVersion}
+              </div>
               <div className="modal-changelog">{updateInfo.changelog}</div>
               <div className="modal-actions">
-                <button className="modal-btn secondary" onClick={() => this.setState({ showUpdateModal: false })}>Later</button>
+                <button
+                  className="modal-btn secondary"
+                  onClick={() => this.setState({ showUpdateModal: false })}
+                >
+                  Later
+                </button>
                 {updateInfo.downloadUrl && (
-                  <button className="modal-btn primary" onClick={() => { downloadUpdate(updateInfo.downloadUrl!); this.setState({ showUpdateModal: false }); }}>
+                  <button
+                    className="modal-btn primary"
+                    onClick={() => {
+                      downloadUpdate(updateInfo.downloadUrl!);
+                      this.setState({ showUpdateModal: false });
+                    }}
+                  >
                     Download
                   </button>
                 )}
@@ -188,59 +245,96 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
           <p className="stats-subtitle">Your personal music analytics</p>
         </div>
 
-        {periodTabs}
-
         {/* Overview Cards Row */}
         <div className="overview-row">
           {/* Hero - Time Listened */}
           <div className="overview-card hero">
-            <div className="overview-value">{formatDurationLong(stats.totalTimeMs)}</div>
+            <div className="overview-value">
+              {formatDurationLong(stats.totalTimeMs)}
+            </div>
             <div className="overview-label">Time Listened</div>
+            {periodTabs}
             <div className="overview-secondary">
               <div className="overview-stat">
                 <div className="overview-stat-value">{stats.trackCount}</div>
                 <div className="overview-stat-label">Tracks</div>
               </div>
               <div className="overview-stat">
-                <div className="overview-stat-value">{stats.uniqueArtistCount}</div>
+                <div className="overview-stat-value">
+                  {stats.uniqueArtistCount}
+                </div>
                 <div className="overview-stat-label">Artists</div>
               </div>
               <div className="overview-stat">
-                <div className="overview-stat-value">{stats.uniqueTrackCount}</div>
+                <div className="overview-stat-value">
+                  {stats.uniqueTrackCount}
+                </div>
                 <div className="overview-stat-label">Unique</div>
               </div>
             </div>
           </div>
 
-          {/* Payout */}
-          <div className="overview-card">
-            <div className="stat-colored">
-              <div className="stat-icon green" dangerouslySetInnerHTML={{ __html: Icons.money }} />
-              <div className="stat-text">
-                <div className="overview-value green">${payout}</div>
-                <div className="overview-label">Paid to Artists</div>
+          {/* 4 info cards */}
+          <div className="overview-card-list">
+            {/* Payout */}
+            <div className="overview-card">
+              <div className="stat-colored">
+                {/* <div
+                className="stat-icon green"
+                dangerouslySetInnerHTML={{ __html: Icons.money }}
+              /> */}
+                <div className="stat-text">
+                  <div className="overview-value green">${payout}</div>
+                  <div className="overview-label">Paid to Artists</div>
+                </div>
               </div>
             </div>
-          </div>
 
-          {/* Streak */}
-          <div className="overview-card">
-            <div className="stat-colored">
-              <div className="stat-icon orange" dangerouslySetInnerHTML={{ __html: Icons.fire }} />
-              <div className="stat-text">
-                <div className="overview-value orange">{stats.streakDays}</div>
-                <div className="overview-label">Day Streak</div>
+            {/* Streak */}
+            <div className="overview-card">
+              <div className="stat-colored">
+                {/* <div
+                className="stat-icon orange"
+                dangerouslySetInnerHTML={{ __html: Icons.fire }}
+              /> */}
+                <div className="stat-text">
+                  <div className="overview-value orange">
+                    {stats.streakDays}
+                  </div>
+                  <div className="overview-label">Day Streak</div>
+                </div>
               </div>
             </div>
-          </div>
 
-          {/* New Artists */}
-          <div className="overview-card">
-            <div className="stat-colored">
-              <div className="stat-icon purple" dangerouslySetInnerHTML={{ __html: Icons.users }} />
-              <div className="stat-text">
-                <div className="overview-value purple">{stats.newArtistsCount}</div>
-                <div className="overview-label">New Artists</div>
+            {/* New Artists */}
+            <div className="overview-card">
+              <div className="stat-colored">
+                {/* <div
+                className="stat-icon purple"
+                dangerouslySetInnerHTML={{ __html: Icons.users }}
+              /> */}
+                <div className="stat-text">
+                  <div className="overview-value purple">
+                    {stats.newArtistsCount}
+                  </div>
+                  <div className="overview-label">New Artists</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Skip Rate */}
+            <div className="overview-card">
+              <div className="stat-colored">
+                {/* <div
+                className="stat-icon purple"
+                dangerouslySetInnerHTML={{ __html: Icons.users }}
+              /> */}
+                <div className="stat-text">
+                  <div className="overview-value red">
+                    {Math.floor(stats.skipRate * 100)}%
+                  </div>
+                  <div className="overview-label">Skip Rate</div>
+                </div>
               </div>
             </div>
           </div>
@@ -258,21 +352,35 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
             </div>
             <div className="item-list">
               {stats.topTracks.slice(0, TOP_ITEMS_COUNT).map((t, i) => (
-                <div key={t.trackUri} className="item-row" onClick={() => navigateToUri(t.trackUri)}>
-                  <span className={`item-rank ${getRankClass(i)}`}>{i + 1}</span>
-                  {t.albumArt && <img src={t.albumArt} className="item-art" alt="" />}
+                <div
+                  key={t.trackUri}
+                  className="item-row"
+                  onClick={() => navigateToUri(t.trackUri)}
+                >
+                  <span className={`item-rank ${getRankClass(i)}`}>
+                    {i + 1}
+                  </span>
+                  {t.albumArt && (
+                    <img src={t.albumArt} className="item-art" alt="" />
+                  )}
                   <div className="item-info">
                     <div className="item-name">{t.trackName}</div>
                     <div className="item-meta">{t.artistName}</div>
                   </div>
                   <div className="item-stats">
                     <span className="item-plays">{t.playCount} plays</span>
-                    <span className="item-time">{formatDuration(t.totalTimeMs)}</span>
+                    <span className="item-time">
+                      {formatDuration(t.totalTimeMs)}
+                    </span>
                   </div>
                   <button
-                    className={`heart-btn ${likedTracks.get(t.trackUri) ? 'liked' : ''}`}
+                    className={`heart-btn ${likedTracks.get(t.trackUri) ? "liked" : ""}`}
                     onClick={(e) => this.handleLikeToggle(t.trackUri, e)}
-                    dangerouslySetInnerHTML={{ __html: likedTracks.get(t.trackUri) ? Icons.heartFilled : Icons.heart }}
+                    dangerouslySetInnerHTML={{
+                      __html: likedTracks.get(t.trackUri)
+                        ? Icons.heartFilled
+                        : Icons.heart,
+                    }}
                   />
                 </div>
               ))}
@@ -291,15 +399,23 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
               {stats.topArtists.slice(0, TOP_ITEMS_COUNT).map((a, i) => {
                 const img = artistImages.get(a.artistUri) || a.artistImage;
                 return (
-                  <div key={a.artistUri || a.artistName} className="item-row" onClick={() => a.artistUri && navigateToUri(a.artistUri)}>
-                    <span className={`item-rank ${getRankClass(i)}`}>{i + 1}</span>
+                  <div
+                    key={a.artistUri || a.artistName}
+                    className="item-row"
+                    onClick={() => a.artistUri && navigateToUri(a.artistUri)}
+                  >
+                    <span className={`item-rank ${getRankClass(i)}`}>
+                      {i + 1}
+                    </span>
                     {img && <img src={img} className="item-art round" alt="" />}
                     <div className="item-info">
                       <div className="item-name">{a.artistName}</div>
                       <div className="item-meta">{a.playCount} plays</div>
                     </div>
                     <div className="item-stats">
-                      <span className="item-time">{formatDuration(a.totalTimeMs)}</span>
+                      <span className="item-time">
+                        {formatDuration(a.totalTimeMs)}
+                      </span>
                     </div>
                   </div>
                 );
@@ -317,16 +433,26 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
             </div>
             <div className="item-list">
               {stats.topAlbums.slice(0, TOP_ITEMS_COUNT).map((a, i) => (
-                <div key={a.albumUri} className="item-row" onClick={() => navigateToUri(a.albumUri)}>
-                  <span className={`item-rank ${getRankClass(i)}`}>{i + 1}</span>
-                  {a.albumArt && <img src={a.albumArt} className="item-art" alt="" />}
+                <div
+                  key={a.albumUri}
+                  className="item-row"
+                  onClick={() => navigateToUri(a.albumUri)}
+                >
+                  <span className={`item-rank ${getRankClass(i)}`}>
+                    {i + 1}
+                  </span>
+                  {a.albumArt && (
+                    <img src={a.albumArt} className="item-art" alt="" />
+                  )}
                   <div className="item-info">
                     <div className="item-name">{a.albumName}</div>
                     <div className="item-meta">{a.artistName}</div>
                   </div>
                   <div className="item-stats">
                     <span className="item-plays">{a.playCount} plays</span>
-                    <span className="item-time">{formatDuration(a.totalTimeMs)}</span>
+                    <span className="item-time">
+                      {formatDuration(a.totalTimeMs)}
+                    </span>
                   </div>
                 </div>
               ))}
@@ -335,7 +461,7 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
         </div>
 
         {/* Activity Chart */}
-        {stats.hourlyDistribution.some(h => h > 0) && (
+        {stats.hourlyDistribution.some((h) => h > 0) && (
           <div className="activity-section">
             <div className="activity-header">
               <h3 className="activity-title">Activity by Hour</h3>
@@ -348,18 +474,24 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
                 const max = Math.max(...stats.hourlyDistribution, 1);
                 const h = val > 0 ? Math.max((val / max) * 100, 5) : 0;
                 return (
-                  <div 
-                    key={hr} 
-                    className={`activity-bar ${hr === stats.peakHour && val > 0 ? 'peak' : ''}`} 
+                  <div
+                    key={hr}
+                    className={`activity-bar ${hr === stats.peakHour && val > 0 ? "peak" : ""}`}
                     style={{ height: `${h}%` }}
                   >
-                    <div className="activity-bar-tooltip">{formatHour(hr)}: {formatMinutes(val)}</div>
+                    <div className="activity-bar-tooltip">
+                      {formatHour(hr)}: {formatMinutes(val)}
+                    </div>
                   </div>
                 );
               })}
             </div>
             <div className="chart-labels">
-              <span>12am</span><span>6am</span><span>12pm</span><span>6pm</span><span>12am</span>
+              <span>12am</span>
+              <span>6am</span>
+              <span>12pm</span>
+              <span>6pm</span>
+              <span>12am</span>
             </div>
           </div>
         )}
@@ -371,9 +503,17 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
               <h3 className="recent-title">Recently Played</h3>
             </div>
             <div className="recent-scroll">
-              {stats.recentTracks.slice(0, 12).map(t => (
-                <div key={`${t.trackUri}-${t.startedAt}`} className="recent-card" onClick={() => navigateToUri(t.trackUri)}>
-                  {t.albumArt ? <img src={t.albumArt} className="recent-art" alt="" /> : <div className="recent-art" />}
+              {stats.recentTracks.slice(0, 12).map((t) => (
+                <div
+                  key={`${t.trackUri}-${t.startedAt}`}
+                  className="recent-card"
+                  onClick={() => navigateToUri(t.trackUri)}
+                >
+                  {t.albumArt ? (
+                    <img src={t.albumArt} className="recent-art" alt="" />
+                  ) : (
+                    <div className="recent-art" />
+                  )}
                   <div className="recent-name">{t.trackName}</div>
                   <div className="recent-meta">{t.artistName}</div>
                 </div>
@@ -385,16 +525,16 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
         {/* Footer */}
         <div className="stats-footer">
           <div className="footer-left">
-            <button 
-              className="settings-toggle" 
+            <button
+              className="settings-toggle"
               onClick={() => this.setState({ showSettings: !showSettings })}
             >
               <span dangerouslySetInnerHTML={{ __html: Icons.settings }} />
               Settings
             </button>
             {updateInfo?.available && (
-              <button 
-                className="footer-btn primary" 
+              <button
+                className="footer-btn primary"
                 onClick={() => this.setState({ showUpdateModal: true })}
               >
                 Update v{updateInfo.latestVersion}
@@ -408,28 +548,55 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
         {showSettings && (
           <div className="settings-panel">
             <div className="settings-row">
-              <button className="footer-btn" onClick={() => this.loadStats()}>Refresh</button>
-              <button className="footer-btn" onClick={async () => { 
-                await runBackgroundEnrichment(true); 
-                this.loadStats(); 
-                Spicetify.showNotification('Data enriched'); 
-              }}>Enrich Data</button>
-              <button className="footer-btn" onClick={() => { 
-                resetRateLimit(); 
-                clearApiCaches(); 
-                Spicetify.showNotification('Cache cleared'); 
-              }}>Clear Cache</button>
-              <button className="footer-btn" onClick={() => this.checkUpdates()}>Check Updates</button>
-              <button className="footer-btn danger" onClick={async () => { 
-                if (confirm('Delete all listening data?')) { 
-                  await clearAllData(); 
-                  this.setState({ stats: null }); 
-                } 
-              }}>Reset Data</button>
+              <button className="footer-btn" onClick={() => this.loadStats()}>
+                Refresh
+              </button>
+              <button
+                className="footer-btn"
+                onClick={async () => {
+                  await runBackgroundEnrichment(true);
+                  this.loadStats();
+                  Spicetify.showNotification("Data enriched");
+                }}
+              >
+                Enrich Data
+              </button>
+              <button
+                className="footer-btn"
+                onClick={() => {
+                  resetRateLimit();
+                  clearApiCaches();
+                  Spicetify.showNotification("Cache cleared");
+                }}
+              >
+                Clear Cache
+              </button>
+              <button
+                className="footer-btn"
+                onClick={() => this.checkUpdates()}
+              >
+                Check Updates
+              </button>
+              <button
+                className="footer-btn danger"
+                onClick={async () => {
+                  if (confirm("Delete all listening data?")) {
+                    await clearAllData();
+                    this.setState({ stats: null });
+                  }
+                }}
+              >
+                Reset Data
+              </button>
             </div>
             <div className="api-status">
-              <span className={`status-dot ${apiAvailable ? 'green' : 'red'}`} />
-              API: {apiAvailable ? 'Available' : `Limited (${Math.ceil(getRateLimitRemaining() / 60)}m)`}
+              <span
+                className={`status-dot ${apiAvailable ? "green" : "red"}`}
+              />
+              API:{" "}
+              {apiAvailable
+                ? "Available"
+                : `Limited (${Math.ceil(getRateLimitRemaining() / 60)}m)`}
             </div>
           </div>
         )}
