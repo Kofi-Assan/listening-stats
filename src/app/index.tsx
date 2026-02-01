@@ -1,0 +1,441 @@
+// Main Stats Page Component - Rebuilt UI
+import { calculateStats, formatDuration, formatDurationLong, getPeriodDisplayName } from '../services/stats';
+import { clearAllData } from '../services/storage';
+import { runBackgroundEnrichment } from '../services/tracker';
+import { isApiAvailable, getRateLimitRemaining, resetRateLimit, clearApiCaches } from '../services/spotify-api';
+import { checkForUpdates, shouldCheckForUpdate, getCurrentVersion, downloadUpdate, UpdateInfo } from '../services/updater';
+import { ListeningStats, TimePeriod } from '../types';
+import { injectStyles } from './styles';
+import { Icons } from './icons';
+import { 
+  navigateToUri, 
+  toggleLike, 
+  checkLikedTracks, 
+  fetchArtistImages, 
+  formatHour, 
+  formatMinutes,
+  estimateArtistPayout,
+  getRankClass 
+} from './utils';
+
+const VERSION = getCurrentVersion();
+const TOP_ITEMS_COUNT = 6;
+
+interface State {
+  period: TimePeriod;
+  stats: ListeningStats | null;
+  loading: boolean;
+  likedTracks: Map<string, boolean>;
+  artistImages: Map<string, string>;
+  updateInfo: UpdateInfo | null;
+  showUpdateModal: boolean;
+  showSettings: boolean;
+  apiAvailable: boolean;
+  lastUpdateTimestamp: number;
+}
+
+class StatsPage extends Spicetify.React.Component<{}, State> {
+  private pollInterval: number | null = null;
+
+  constructor(props: {}) {
+    super(props);
+    this.state = {
+      period: 'today',
+      stats: null,
+      loading: true,
+      likedTracks: new Map(),
+      artistImages: new Map(),
+      updateInfo: null,
+      showUpdateModal: false,
+      showSettings: false,
+      apiAvailable: true,
+      lastUpdateTimestamp: 0,
+    };
+  }
+
+  componentDidMount() {
+    injectStyles();
+    this.loadStats();
+    
+    this.pollInterval = window.setInterval(() => {
+      const ts = localStorage.getItem('listening-stats:lastUpdate');
+      if (ts) {
+        const t = parseInt(ts, 10);
+        if (t > this.state.lastUpdateTimestamp) {
+          this.setState({ lastUpdateTimestamp: t });
+          this.loadStats();
+        }
+      }
+      this.setState({ apiAvailable: isApiAvailable() });
+    }, 2000);
+    
+    if (shouldCheckForUpdate()) {
+      this.checkUpdates();
+    }
+  }
+
+  componentWillUnmount() {
+    if (this.pollInterval) clearInterval(this.pollInterval);
+  }
+
+  componentDidUpdate(_: {}, prev: State) {
+    if (prev.period !== this.state.period) this.loadStats();
+  }
+
+  checkUpdates = async () => {
+    const info = await checkForUpdates();
+    if (info.available) this.setState({ updateInfo: info });
+  };
+
+  loadStats = async () => {
+    this.setState({ loading: true });
+    try {
+      const data = await calculateStats(this.state.period);
+      this.setState({ stats: data, loading: false });
+      
+      if (data.topTracks.length > 0) {
+        const uris = data.topTracks.map(t => t.trackUri);
+        const liked = await checkLikedTracks(uris);
+        this.setState({ likedTracks: liked });
+      }
+      
+      if (data.topArtists.length > 0) {
+        const uris = data.topArtists.map(a => a.artistUri).filter(Boolean);
+        const images = await fetchArtistImages(uris);
+        this.setState({ artistImages: images });
+      }
+    } catch (e) {
+      console.error('[ListeningStats] Load failed:', e);
+      this.setState({ loading: false });
+    }
+  };
+
+  handleLikeToggle = async (uri: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const current = this.state.likedTracks.get(uri) || false;
+    const newVal = await toggleLike(uri, current);
+    const m = new Map(this.state.likedTracks);
+    m.set(uri, newVal);
+    this.setState({ likedTracks: m });
+  };
+
+  render() {
+    const { period, stats, loading, likedTracks, artistImages, updateInfo, showUpdateModal, showSettings, apiAvailable } = this.state;
+    const React = Spicetify.React;
+
+    if (loading) {
+      return <div className="stats-page"><div className="loading">Loading...</div></div>;
+    }
+
+    const periodTabs = (
+      <div className="period-tabs">
+        {(['today', 'week', 'month', 'allTime'] as TimePeriod[]).map(p => (
+          <button 
+            key={p} 
+            className={`period-tab ${period === p ? 'active' : ''}`} 
+            onClick={() => this.setState({ period: p })}
+          >
+            {p === 'today' ? 'Today' : p === 'week' ? 'This Week' : p === 'month' ? 'This Month' : 'All Time'}
+          </button>
+        ))}
+      </div>
+    );
+
+    // Empty state
+    if (!stats || stats.trackCount === 0) {
+      return (
+        <div className="stats-page">
+          <div className="stats-header">
+            <h1 className="stats-title">Listening Stats</h1>
+            <p className="stats-subtitle">Your personal music analytics</p>
+          </div>
+          {periodTabs}
+          <div className="empty-state">
+            <div className="empty-icon" dangerouslySetInnerHTML={{ __html: Icons.headphones }} />
+            <div className="empty-title">No data for {getPeriodDisplayName(period)}</div>
+            <p className="empty-text">Start listening to see your stats!</p>
+          </div>
+        </div>
+      );
+    }
+
+    const payout = estimateArtistPayout(stats.trackCount);
+
+    return (
+      <div className="stats-page">
+        {/* Update Modal */}
+        {showUpdateModal && updateInfo && (
+          <div className="modal-overlay" onClick={() => this.setState({ showUpdateModal: false })}>
+            <div className="modal-content" onClick={e => e.stopPropagation()}>
+              <div className="modal-title">Update Available</div>
+              <div className="modal-subtitle">v{updateInfo.currentVersion} → v{updateInfo.latestVersion}</div>
+              <div className="modal-changelog">{updateInfo.changelog}</div>
+              <div className="modal-actions">
+                <button className="modal-btn secondary" onClick={() => this.setState({ showUpdateModal: false })}>Later</button>
+                {updateInfo.downloadUrl && (
+                  <button className="modal-btn primary" onClick={() => { downloadUpdate(updateInfo.downloadUrl!); this.setState({ showUpdateModal: false }); }}>
+                    Download
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Header */}
+        <div className="stats-header">
+          <h1 className="stats-title">Listening Stats</h1>
+          <p className="stats-subtitle">Your personal music analytics</p>
+        </div>
+
+        {periodTabs}
+
+        {/* Overview Cards Row */}
+        <div className="overview-row">
+          {/* Hero - Time Listened */}
+          <div className="overview-card hero">
+            <div className="overview-value">{formatDurationLong(stats.totalTimeMs)}</div>
+            <div className="overview-label">Time Listened</div>
+            <div className="overview-secondary">
+              <div className="overview-stat">
+                <div className="overview-stat-value">{stats.trackCount}</div>
+                <div className="overview-stat-label">Tracks</div>
+              </div>
+              <div className="overview-stat">
+                <div className="overview-stat-value">{stats.uniqueArtistCount}</div>
+                <div className="overview-stat-label">Artists</div>
+              </div>
+              <div className="overview-stat">
+                <div className="overview-stat-value">{stats.uniqueTrackCount}</div>
+                <div className="overview-stat-label">Unique</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Payout */}
+          <div className="overview-card">
+            <div className="stat-colored">
+              <div className="stat-icon green" dangerouslySetInnerHTML={{ __html: Icons.money }} />
+              <div className="stat-text">
+                <div className="overview-value green">${payout}</div>
+                <div className="overview-label">Paid to Artists</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Streak */}
+          <div className="overview-card">
+            <div className="stat-colored">
+              <div className="stat-icon orange" dangerouslySetInnerHTML={{ __html: Icons.fire }} />
+              <div className="stat-text">
+                <div className="overview-value orange">{stats.streakDays}</div>
+                <div className="overview-label">Day Streak</div>
+              </div>
+            </div>
+          </div>
+
+          {/* New Artists */}
+          <div className="overview-card">
+            <div className="stat-colored">
+              <div className="stat-icon purple" dangerouslySetInnerHTML={{ __html: Icons.users }} />
+              <div className="stat-text">
+                <div className="overview-value purple">{stats.newArtistsCount}</div>
+                <div className="overview-label">New Artists</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Top Lists Section */}
+        <div className="top-lists-section">
+          {/* Top Tracks */}
+          <div className="top-list">
+            <div className="top-list-header">
+              <h3 className="top-list-title">
+                <span dangerouslySetInnerHTML={{ __html: Icons.music }} />
+                Top Tracks
+              </h3>
+            </div>
+            <div className="item-list">
+              {stats.topTracks.slice(0, TOP_ITEMS_COUNT).map((t, i) => (
+                <div key={t.trackUri} className="item-row" onClick={() => navigateToUri(t.trackUri)}>
+                  <span className={`item-rank ${getRankClass(i)}`}>{i + 1}</span>
+                  {t.albumArt && <img src={t.albumArt} className="item-art" alt="" />}
+                  <div className="item-info">
+                    <div className="item-name">{t.trackName}</div>
+                    <div className="item-meta">{t.artistName}</div>
+                  </div>
+                  <div className="item-stats">
+                    <span className="item-plays">{t.playCount} plays</span>
+                    <span className="item-time">{formatDuration(t.totalTimeMs)}</span>
+                  </div>
+                  <button
+                    className={`heart-btn ${likedTracks.get(t.trackUri) ? 'liked' : ''}`}
+                    onClick={(e) => this.handleLikeToggle(t.trackUri, e)}
+                    dangerouslySetInnerHTML={{ __html: likedTracks.get(t.trackUri) ? Icons.heartFilled : Icons.heart }}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Top Artists */}
+          <div className="top-list">
+            <div className="top-list-header">
+              <h3 className="top-list-title">
+                <span dangerouslySetInnerHTML={{ __html: Icons.users }} />
+                Top Artists
+              </h3>
+            </div>
+            <div className="item-list">
+              {stats.topArtists.slice(0, TOP_ITEMS_COUNT).map((a, i) => {
+                const img = artistImages.get(a.artistUri) || a.artistImage;
+                return (
+                  <div key={a.artistUri || a.artistName} className="item-row" onClick={() => a.artistUri && navigateToUri(a.artistUri)}>
+                    <span className={`item-rank ${getRankClass(i)}`}>{i + 1}</span>
+                    {img && <img src={img} className="item-art round" alt="" />}
+                    <div className="item-info">
+                      <div className="item-name">{a.artistName}</div>
+                      <div className="item-meta">{a.playCount} plays</div>
+                    </div>
+                    <div className="item-stats">
+                      <span className="item-time">{formatDuration(a.totalTimeMs)}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Top Albums */}
+          <div className="top-list">
+            <div className="top-list-header">
+              <h3 className="top-list-title">
+                <span dangerouslySetInnerHTML={{ __html: Icons.album }} />
+                Top Albums
+              </h3>
+            </div>
+            <div className="item-list">
+              {stats.topAlbums.slice(0, TOP_ITEMS_COUNT).map((a, i) => (
+                <div key={a.albumUri} className="item-row" onClick={() => navigateToUri(a.albumUri)}>
+                  <span className={`item-rank ${getRankClass(i)}`}>{i + 1}</span>
+                  {a.albumArt && <img src={a.albumArt} className="item-art" alt="" />}
+                  <div className="item-info">
+                    <div className="item-name">{a.albumName}</div>
+                    <div className="item-meta">{a.artistName}</div>
+                  </div>
+                  <div className="item-stats">
+                    <span className="item-plays">{a.playCount} plays</span>
+                    <span className="item-time">{formatDuration(a.totalTimeMs)}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Activity Chart */}
+        {stats.hourlyDistribution.some(h => h > 0) && (
+          <div className="activity-section">
+            <div className="activity-header">
+              <h3 className="activity-title">Activity by Hour</h3>
+              <div className="activity-peak">
+                Peak: <strong>{formatHour(stats.peakHour)}</strong>
+              </div>
+            </div>
+            <div className="activity-chart">
+              {stats.hourlyDistribution.map((val, hr) => {
+                const max = Math.max(...stats.hourlyDistribution, 1);
+                const h = val > 0 ? Math.max((val / max) * 100, 5) : 0;
+                return (
+                  <div 
+                    key={hr} 
+                    className={`activity-bar ${hr === stats.peakHour && val > 0 ? 'peak' : ''}`} 
+                    style={{ height: `${h}%` }}
+                  >
+                    <div className="activity-bar-tooltip">{formatHour(hr)}: {formatMinutes(val)}</div>
+                  </div>
+                );
+              })}
+            </div>
+            <div className="chart-labels">
+              <span>12am</span><span>6am</span><span>12pm</span><span>6pm</span><span>12am</span>
+            </div>
+          </div>
+        )}
+
+        {/* Recently Played */}
+        {stats.recentTracks.length > 0 && (
+          <div className="recent-section">
+            <div className="recent-header">
+              <h3 className="recent-title">Recently Played</h3>
+            </div>
+            <div className="recent-scroll">
+              {stats.recentTracks.slice(0, 12).map(t => (
+                <div key={`${t.trackUri}-${t.startedAt}`} className="recent-card" onClick={() => navigateToUri(t.trackUri)}>
+                  {t.albumArt ? <img src={t.albumArt} className="recent-art" alt="" /> : <div className="recent-art" />}
+                  <div className="recent-name">{t.trackName}</div>
+                  <div className="recent-meta">{t.artistName}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="stats-footer">
+          <div className="footer-left">
+            <button 
+              className="settings-toggle" 
+              onClick={() => this.setState({ showSettings: !showSettings })}
+            >
+              <span dangerouslySetInnerHTML={{ __html: Icons.settings }} />
+              Settings
+            </button>
+            {updateInfo?.available && (
+              <button 
+                className="footer-btn primary" 
+                onClick={() => this.setState({ showUpdateModal: true })}
+              >
+                Update v{updateInfo.latestVersion}
+              </button>
+            )}
+          </div>
+          <span className="version-text">v{VERSION}</span>
+        </div>
+
+        {/* Settings Panel */}
+        {showSettings && (
+          <div className="settings-panel">
+            <div className="settings-row">
+              <button className="footer-btn" onClick={() => this.loadStats()}>Refresh</button>
+              <button className="footer-btn" onClick={async () => { 
+                await runBackgroundEnrichment(true); 
+                this.loadStats(); 
+                Spicetify.showNotification('Data enriched'); 
+              }}>Enrich Data</button>
+              <button className="footer-btn" onClick={() => { 
+                resetRateLimit(); 
+                clearApiCaches(); 
+                Spicetify.showNotification('Cache cleared'); 
+              }}>Clear Cache</button>
+              <button className="footer-btn" onClick={() => this.checkUpdates()}>Check Updates</button>
+              <button className="footer-btn danger" onClick={async () => { 
+                if (confirm('Delete all listening data?')) { 
+                  await clearAllData(); 
+                  this.setState({ stats: null }); 
+                } 
+              }}>Reset Data</button>
+            </div>
+            <div className="api-status">
+              <span className={`status-dot ${apiAvailable ? 'green' : 'red'}`} />
+              API: {apiAvailable ? 'Available' : `Limited (${Math.ceil(getRateLimitRemaining() / 60)}m)`}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+}
+
+export default StatsPage;

@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "jsx": "react",
+    "jsxFactory": "Spicetify.React.createElement",
+    "jsxFragmentFactory": "Spicetify.React.Fragment",
+    "outDir": "./dist",
+    "rootDir": "./src",
+    "declaration": false,
+    "resolveJsonModule": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "noImplicitAny": false
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
