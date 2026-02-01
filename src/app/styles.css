@@ -772,6 +772,64 @@
   background: var(--background-elevated-highlight);
 }
 
+/* Update Modal Specific */
+.update-modal {
+  max-width: 480px;
+}
+
+.modal-header {
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.modal-icon {
+  font-size: 48px;
+  margin-bottom: 8px;
+}
+
+.update-modal .modal-title {
+  font-size: 24px;
+  margin-bottom: 4px;
+}
+
+.update-modal .modal-subtitle {
+  font-size: 14px;
+  color: var(--text-subdued);
+  margin: 0;
+}
+
+.modal-instructions {
+  background: var(--background-tinted-base);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 20px;
+}
+
+.instruction-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-subdued);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+}
+
+.instruction-text {
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-line;
+  font-family: monospace;
+}
+
+.update-modal .modal-actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.update-modal .modal-btn {
+  flex: 1;
+  min-width: 100px;
+}
+
 /* ===== Responsive ===== */
 @media (max-width: 1200px) {
   .overview-row {

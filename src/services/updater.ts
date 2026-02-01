@@ -1,13 +1,18 @@
 // GitHub Auto-Update Service
 const GITHUB_REPO = 'Xndr2/listening-stats';
 const STORAGE_KEY = 'listening-stats:lastUpdateCheck';
-const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // Check once per day
+const DISMISSED_KEY = 'listening-stats:dismissedVersion';
+const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000; // Check every 6 hours
+
+// Version is injected at build time by esbuild
+declare const __APP_VERSION__: string;
 
 export interface GitHubRelease {
   tag_name: string;
   name: string;
   body: string; // Changelog
   published_at: string;
+  html_url: string;
   assets: Array<{
     name: string;
     browser_download_url: string;
@@ -20,12 +25,16 @@ export interface UpdateInfo {
   latestVersion: string;
   changelog: string;
   downloadUrl: string | null;
+  releaseUrl: string | null;
 }
 
-// Get current version from build
-// NOTE: Keep this in sync with package.json version
+// Get current version - injected at build time from package.json
 export function getCurrentVersion(): string {
-  return '1.0.3';
+  try {
+    return __APP_VERSION__;
+  } catch {
+    return '0.0.0'; // Fallback if not injected
+  }
 }
 
 // Check for updates from GitHub releases
@@ -33,7 +42,9 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
   const currentVersion = getCurrentVersion();
   
   try {
-    const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`);
+    const response = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`, {
+      headers: { 'Accept': 'application/vnd.github.v3+json' }
+    });
     if (!response.ok) {
       throw new Error('Failed to fetch release info');
     }
@@ -41,8 +52,12 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
     const release: GitHubRelease = await response.json();
     const latestVersion = release.tag_name.replace(/^v/, '');
     
-    // Find the dist.zip asset
-    const distAsset = release.assets.find(a => a.name === 'dist.zip' || a.name.includes('listening-stats'));
+    // Find the zip asset
+    const distAsset = release.assets.find(a => 
+      a.name === 'listening-stats.zip' || 
+      a.name === 'dist.zip' || 
+      a.name.endsWith('.zip')
+    );
     
     const available = isNewerVersion(latestVersion, currentVersion);
     
@@ -53,12 +68,15 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
       available,
     }));
     
+    console.log(`[ListeningStats] Version check: current=${currentVersion}, latest=${latestVersion}, update=${available}`);
+    
     return {
       available,
       currentVersion,
       latestVersion,
       changelog: release.body || 'No changelog provided.',
       downloadUrl: distAsset?.browser_download_url || null,
+      releaseUrl: release.html_url,
     };
   } catch (error) {
     console.error('[ListeningStats] Update check failed:', error);
@@ -68,6 +86,7 @@ export async function checkForUpdates(): Promise<UpdateInfo> {
       latestVersion: currentVersion,
       changelog: '',
       downloadUrl: null,
+      releaseUrl: null,
     };
   }
 }
@@ -86,7 +105,7 @@ function isNewerVersion(latest: string, current: string): boolean {
   return false;
 }
 
-// Check if we should prompt for update (based on last check time)
+// Check if we should check for updates (based on last check time)
 export function shouldCheckForUpdate(): boolean {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -97,6 +116,26 @@ export function shouldCheckForUpdate(): boolean {
   } catch {
     return true;
   }
+}
+
+// Check if user dismissed this version
+export function wasVersionDismissed(version: string): boolean {
+  try {
+    const dismissed = localStorage.getItem(DISMISSED_KEY);
+    return dismissed === version;
+  } catch {
+    return false;
+  }
+}
+
+// Dismiss a version (user clicked "Later")
+export function dismissVersion(version: string): void {
+  localStorage.setItem(DISMISSED_KEY, version);
+}
+
+// Clear dismissed version (to show update again)
+export function clearDismissedVersion(): void {
+  localStorage.removeItem(DISMISSED_KEY);
 }
 
 // Get cached update info
@@ -110,9 +149,15 @@ export function getCachedUpdateInfo(): { available: boolean; latestVersion: stri
   }
 }
 
-// Download and apply update (manual process - user needs to extract)
-export async function downloadUpdate(downloadUrl: string): Promise<void> {
-  // Open download in new tab - user will need to manually install
+// Download update - opens download link
+export function downloadUpdate(downloadUrl: string): void {
   window.open(downloadUrl, '_blank');
-  Spicetify.showNotification('Download started. Extract to CustomApps/listening-stats and run "spicetify apply"');
+}
+
+// Get platform-specific install instructions
+export function getInstallInstructions(): { windows: string; linux: string } {
+  return {
+    windows: `1. Extract the zip to %APPDATA%\\spicetify\\CustomApps\\listening-stats\n2. Run: spicetify apply`,
+    linux: `1. Extract the zip to ~/.config/spicetify/CustomApps/listening-stats\n2. Run: spicetify apply`,
+  };
 }

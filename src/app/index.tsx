@@ -15,10 +15,14 @@ import { clearAllData } from "../services/storage";
 import { runBackgroundEnrichment } from "../services/tracker";
 import {
   checkForUpdates,
+  clearDismissedVersion,
+  dismissVersion,
   downloadUpdate,
   getCurrentVersion,
+  getInstallInstructions,
   shouldCheckForUpdate,
   UpdateInfo,
+  wasVersionDismissed,
 } from "../services/updater";
 import { ListeningStats, TimePeriod } from "../types";
 import { Icons } from "./icons";
@@ -98,9 +102,15 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
     if (prev.period !== this.state.period) this.loadStats();
   }
 
-  checkUpdates = async () => {
+  checkUpdates = async (forceShow: boolean = false) => {
     const info = await checkForUpdates();
-    if (info.available) this.setState({ updateInfo: info });
+    if (info.available) {
+      this.setState({ updateInfo: info });
+      // Auto-show modal if not previously dismissed (or forced)
+      if (forceShow || !wasVersionDismissed(info.latestVersion)) {
+        this.setState({ showUpdateModal: true });
+      }
+    }
   };
 
   loadStats = async () => {
@@ -208,30 +218,57 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
         {showUpdateModal && updateInfo && (
           <div
             className="modal-overlay"
-            onClick={() => this.setState({ showUpdateModal: false })}
+            onClick={() => {
+              dismissVersion(updateInfo.latestVersion);
+              this.setState({ showUpdateModal: false });
+            }}
           >
-            <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-              <div className="modal-title">Update Available</div>
-              <div className="modal-subtitle">
-                v{updateInfo.currentVersion} → v{updateInfo.latestVersion}
+            <div className="modal-content update-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <div className="modal-icon">🎉</div>
+                <div className="modal-title">Update Available!</div>
+                <div className="modal-subtitle">
+                  v{updateInfo.currentVersion} → v{updateInfo.latestVersion}
+                </div>
               </div>
-              <div className="modal-changelog">{updateInfo.changelog}</div>
+              {updateInfo.changelog && (
+                <div className="modal-changelog">{updateInfo.changelog}</div>
+              )}
+              <div className="modal-instructions">
+                <div className="instruction-title">After downloading:</div>
+                <div className="instruction-text">
+                  {navigator.platform.includes('Win') 
+                    ? getInstallInstructions().windows 
+                    : getInstallInstructions().linux}
+                </div>
+              </div>
               <div className="modal-actions">
                 <button
                   className="modal-btn secondary"
-                  onClick={() => this.setState({ showUpdateModal: false })}
+                  onClick={() => {
+                    dismissVersion(updateInfo.latestVersion);
+                    this.setState({ showUpdateModal: false });
+                  }}
                 >
                   Later
                 </button>
+                {updateInfo.releaseUrl && (
+                  <button
+                    className="modal-btn secondary"
+                    onClick={() => window.open(updateInfo.releaseUrl!, '_blank')}
+                  >
+                    View Release
+                  </button>
+                )}
                 {updateInfo.downloadUrl && (
                   <button
                     className="modal-btn primary"
                     onClick={() => {
                       downloadUpdate(updateInfo.downloadUrl!);
-                      this.setState({ showUpdateModal: false });
+                      Spicetify.showNotification('Download started!');
                     }}
                   >
-                    Download
+                    Download Update
                   </button>
                 )}
               </div>
@@ -573,7 +610,10 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
               </button>
               <button
                 className="footer-btn"
-                onClick={() => this.checkUpdates()}
+                onClick={() => {
+                  clearDismissedVersion();
+                  this.checkUpdates(true);
+                }}
               >
                 Check Updates
               </button>
