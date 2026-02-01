@@ -96,7 +96,7 @@ Use the period tabs to switch between **Today**, **This Week**, **This Month**, 
 
 All data stored locally in IndexedDB. Nothing sent to external servers.
 
-API calls go directly to `api.spotify.com` using your existing Spotify session — no proxy, no data collection.
+API calls go directly to `api.spotify.com` using your existing Spotify session, no proxy, no data collection.
 
 ## Contributing
 
