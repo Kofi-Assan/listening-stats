@@ -17,10 +17,10 @@ import {
   checkForUpdates,
   checkJustUpdated,
   clearDismissedVersion,
+  copyInstallCommand,
   dismissVersion,
   getCurrentVersion,
-  isAutoUpdateAvailable,
-  performAutoUpdate,
+  getInstallCommand,
   shouldCheckForUpdate,
   UpdateInfo,
   wasVersionDismissed,
@@ -55,8 +55,6 @@ interface State {
   showSettings: boolean;
   apiAvailable: boolean;
   lastUpdateTimestamp: number;
-  isUpdating: boolean;
-  updateError: string | null;
 }
 
 class StatsPage extends Spicetify.React.Component<{}, State> {
@@ -77,8 +75,6 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
       showSettings: false,
       apiAvailable: true,
       lastUpdateTimestamp: 0,
-      isUpdating: false,
-      updateError: null,
     };
   }
 
@@ -115,46 +111,24 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
     if (prev.period !== this.state.period) this.loadStats();
   }
 
-  // Auto-check for updates and apply automatically if available
+  // Auto-check for updates on startup
   checkAndAutoUpdate = async () => {
     if (!shouldCheckForUpdate()) return;
     
     const info = await checkForUpdates();
-    if (!info.available || !info.downloadUrl) return;
+    if (!info.available) return;
     
     this.setState({ updateInfo: info });
     
-    // If auto-update is available, update automatically without asking
-    if (isAutoUpdateAvailable()) {
-      console.log('[ListeningStats] Update available, auto-updating...');
-      this.setState({ isUpdating: true });
-      
-      const result = await performAutoUpdate(info.downloadUrl);
-      
-      this.setState({ isUpdating: false });
-      
-      if (result.success) {
-        // Show restart notification
-        Spicetify.showNotification('ListeningStats updated! Restart Spotify to apply.', false, 5000);
-      } else {
-        console.error('[ListeningStats] Auto-update failed:', result.message);
-        // Fall back to showing manual update modal
-        if (!wasVersionDismissed(info.latestVersion)) {
-          this.setState({ showUpdateModal: true });
-        }
-      }
-    } else {
-      // No auto-update available, show modal if not dismissed
-      if (!wasVersionDismissed(info.latestVersion)) {
-        this.setState({ showUpdateModal: true });
-      }
+    // Show update modal if not dismissed
+    if (!wasVersionDismissed(info.latestVersion)) {
+      this.setState({ showUpdateModal: true });
     }
   };
 
   // Manual check for updates (from settings button)
   checkUpdatesManual = async () => {
     clearDismissedVersion();
-    this.setState({ updateError: null });
     
     const info = await checkForUpdates();
     this.setState({ updateInfo: info });
@@ -167,26 +141,16 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
     }
   };
 
-  // Perform update after user confirms
+  // Perform update - copy command to clipboard
   performUpdate = async () => {
-    const { updateInfo } = this.state;
-    if (!updateInfo?.downloadUrl) return;
+    this.setState({ showUpdateConfirmModal: false, showUpdateModal: false });
     
-    this.setState({ showUpdateConfirmModal: false, isUpdating: true, updateError: null });
-    
-    if (isAutoUpdateAvailable()) {
-      const result = await performAutoUpdate(updateInfo.downloadUrl);
-      this.setState({ isUpdating: false });
-      
-      if (result.success) {
-        Spicetify.showNotification('Update installed! Restart Spotify to apply.', false, 5000);
-      } else {
-        this.setState({ updateError: result.message });
-        Spicetify.showNotification('Update failed: ' + result.message, true);
-      }
+    const copied = await copyInstallCommand();
+    if (copied) {
+      Spicetify.showNotification('Install command copied! Paste in terminal to update.', false, 5000);
     } else {
-      // Fallback: open download link
-      this.setState({ isUpdating: false, showUpdateModal: true });
+      Spicetify.showNotification('Failed to copy command. Check console for install command.', true);
+      console.log('[ListeningStats] Install command:', getInstallCommand());
     }
   };
 
@@ -235,7 +199,6 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
       showUpdateConfirmModal,
       showSettings,
       apiAvailable,
-      isUpdating,
     } = this.state;
     const React = Spicetify.React;
 
@@ -345,35 +308,29 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
                 <div className="modal-changelog">{updateInfo.changelog}</div>
               )}
               <div className="modal-body">
-                <p>Would you like to update now?</p>
+                <p>This will copy an install command to your clipboard. Paste it in your terminal to update.</p>
               </div>
               <div className="modal-actions">
                 <button
                   className="modal-btn secondary"
                   onClick={() => this.setState({ showUpdateConfirmModal: false })}
                 >
-                  Later
+                  Cancel
                 </button>
                 <button
                   className="modal-btn primary"
                   onClick={this.performUpdate}
                 >
-                  Update Now
+                  📋 Copy Install Command
                 </button>
               </div>
             </div>
           </div>
         )}
 
-        {/* Legacy Update Modal (fallback when auto-update unavailable) */}
+        {/* Update Modal - Floating non-blocking popup */}
         {showUpdateModal && updateInfo && (
-          <div
-            className="modal-overlay"
-            onClick={() => {
-              dismissVersion(updateInfo.latestVersion);
-              this.setState({ showUpdateModal: false });
-            }}
-          >
+          <div className="modal-overlay floating">
             <div
               className="modal-content update-modal"
               onClick={(e) => e.stopPropagation()}
@@ -389,11 +346,12 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
                 <div className="modal-changelog">{updateInfo.changelog}</div>
               )}
               <div className="modal-body">
-                <p>Auto-update is not available. Please update manually:</p>
-                <ol className="manual-steps">
-                  <li>Download the update</li>
-                  <li>Extract to your CustomApps folder</li>
-                  <li>Run <code>spicetify apply</code></li>
+                <p><strong>How to update:</strong></p>
+                <ol className="update-steps">
+                  <li>Click "Copy Install Command" below</li>
+                  <li>Open a terminal</li>
+                  <li>Paste and run the command</li>
+                  <li>Restart Spotify</li>
                 </ol>
               </div>
               <div className="modal-actions">
@@ -404,39 +362,15 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
                     this.setState({ showUpdateModal: false });
                   }}
                 >
-                  Later
+                  Dismiss
                 </button>
-                {updateInfo.releaseUrl && (
-                  <button
-                    className="modal-btn secondary"
-                    onClick={() =>
-                      window.open(updateInfo.releaseUrl!, "_blank")
-                    }
-                  >
-                    View Release
-                  </button>
-                )}
-                {updateInfo.downloadUrl && (
-                  <button
-                    className="modal-btn primary"
-                    onClick={() =>
-                      window.open(updateInfo.downloadUrl!, "_blank")
-                    }
-                  >
-                    Download
-                  </button>
-                )}
+                <button
+                  className="modal-btn primary"
+                  onClick={this.performUpdate}
+                >
+                  📋 Copy Install Command
+                </button>
               </div>
-            </div>
-          </div>
-        )}
-
-        {/* Updating Overlay */}
-        {isUpdating && (
-          <div className="modal-overlay updating-overlay">
-            <div className="updating-content">
-              <div className="updating-spinner"></div>
-              <div className="updating-text">Updating...</div>
             </div>
           </div>
         )}
@@ -777,9 +711,8 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
               <button
                 className="footer-btn"
                 onClick={this.checkUpdatesManual}
-                disabled={isUpdating}
               >
-                {isUpdating ? 'Updating...' : 'Check Updates'}
+                Check Updates
               </button>
               <button
                 className="footer-btn danger"

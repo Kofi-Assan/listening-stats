@@ -900,25 +900,11 @@ var ListeningStatsApp = (() => {
   var STORAGE_KEY = "listening-stats:lastUpdateCheck";
   var DISMISSED_KEY = "listening-stats:dismissedVersion";
   var JUST_UPDATED_KEY = "listening-stats:justUpdated";
-  var CHECK_INTERVAL_MS = 6 * 60 * 60 * 1e3;
-  var fs = null;
-  var path = null;
-  var childProcess = null;
-  var os = null;
-  try {
-    const nodeRequire = window.require || global.require;
-    if (nodeRequire) {
-      fs = nodeRequire("fs");
-      path = nodeRequire("path");
-      childProcess = nodeRequire("child_process");
-      os = nodeRequire("os");
-    }
-  } catch (e) {
-    console.log("[ListeningStats] Node.js modules not available, auto-update disabled");
-  }
+  var INSTALL_CMD_LINUX = `curl -fsSL https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.sh | bash`;
+  var INSTALL_CMD_WINDOWS = `iwr -useb 'https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.ps1' | iex`;
   function getCurrentVersion() {
     try {
-      return "1.0.45";
+      return "1.0.42";
     } catch {
       return "0.0.0";
     }
@@ -976,14 +962,7 @@ var ListeningStatsApp = (() => {
     return false;
   }
   function shouldCheckForUpdate() {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEY);
-      if (!stored) return true;
-      const { checkedAt } = JSON.parse(stored);
-      return Date.now() - checkedAt > CHECK_INTERVAL_MS;
-    } catch {
-      return true;
-    }
+    return true;
   }
   function wasVersionDismissed(version) {
     try {
@@ -999,125 +978,29 @@ var ListeningStatsApp = (() => {
   function clearDismissedVersion() {
     localStorage.removeItem(DISMISSED_KEY);
   }
-  function isAutoUpdateAvailable() {
-    return !!(fs && path && childProcess && os);
+  function getInstallCommand() {
+    const isWindows = navigator.platform.toLowerCase().includes("win");
+    return isWindows ? INSTALL_CMD_WINDOWS : INSTALL_CMD_LINUX;
   }
-  function getCustomAppsPath() {
-    if (!os || !path || !fs) return null;
-    const isWindows = os.platform() === "win32";
-    let configPath;
-    if (isWindows) {
-      configPath = path.join(os.homedir(), "AppData", "Roaming", "spicetify");
-    } else {
-      configPath = path.join(os.homedir(), ".config", "spicetify");
-      if (!fs.existsSync(configPath)) {
-        configPath = path.join(os.homedir(), ".spicetify");
-      }
-    }
-    return path.join(configPath, "CustomApps", "listening-stats");
-  }
-  async function performAutoUpdate(downloadUrl) {
-    if (!isAutoUpdateAvailable()) {
-      return {
-        success: false,
-        message: "Auto-update not available in this environment",
-        needsRestart: false
-      };
-    }
-    const appPath = getCustomAppsPath();
-    if (!appPath) {
-      return {
-        success: false,
-        message: "Could not determine installation path",
-        needsRestart: false
-      };
-    }
-    console.log("[ListeningStats] Starting auto-update...");
-    console.log("[ListeningStats] Install path:", appPath);
+  async function copyInstallCommand() {
+    const cmd = getInstallCommand();
     try {
-      const response = await fetch(downloadUrl);
-      if (!response.ok) {
-        throw new Error(`Download failed: ${response.status}`);
-      }
-      const arrayBuffer = await response.arrayBuffer();
-      const buffer = Buffer.from(arrayBuffer);
-      const tempDir = path.join(os.tmpdir(), "listening-stats-update");
-      const tempZip = path.join(tempDir, "update.zip");
-      if (fs.existsSync(tempDir)) {
-        fs.rmSync(tempDir, { recursive: true, force: true });
-      }
-      fs.mkdirSync(tempDir, { recursive: true });
-      fs.writeFileSync(tempZip, buffer);
-      console.log("[ListeningStats] Downloaded update to:", tempZip);
-      const extractDir = path.join(tempDir, "extracted");
-      fs.mkdirSync(extractDir, { recursive: true });
-      const isWindows = os.platform() === "win32";
-      if (isWindows) {
-        childProcess.execSync(
-          `powershell -Command "Expand-Archive -Path '${tempZip}' -DestinationPath '${extractDir}' -Force"`,
-          { stdio: "pipe" }
-        );
-      } else {
-        childProcess.execSync(`unzip -q -o "${tempZip}" -d "${extractDir}"`, { stdio: "pipe" });
-      }
-      console.log("[ListeningStats] Extracted to:", extractDir);
-      let sourceDir = extractDir;
-      const manifestPath = path.join(extractDir, "manifest.json");
-      if (!fs.existsSync(manifestPath)) {
-        const entries = fs.readdirSync(extractDir);
-        for (const entry of entries) {
-          const nestedPath = path.join(extractDir, entry);
-          if (fs.statSync(nestedPath).isDirectory()) {
-            if (fs.existsSync(path.join(nestedPath, "manifest.json"))) {
-              sourceDir = nestedPath;
-              break;
-            }
-          }
-        }
-      }
-      console.log("[ListeningStats] Source directory:", sourceDir);
-      if (fs.existsSync(appPath)) {
-        fs.rmSync(appPath, { recursive: true, force: true });
-      }
-      fs.mkdirSync(appPath, { recursive: true });
-      copyDirSync(sourceDir, appPath);
-      console.log("[ListeningStats] Files copied to:", appPath);
-      fs.rmSync(tempDir, { recursive: true, force: true });
-      localStorage.setItem(JUST_UPDATED_KEY, "true");
-      console.log("[ListeningStats] Running spicetify apply...");
+      await navigator.clipboard.writeText(cmd);
+      return true;
+    } catch (e) {
       try {
-        if (isWindows) {
-          childProcess.execSync("spicetify apply", { stdio: "pipe" });
-        } else {
-          childProcess.execSync("spicetify apply", { stdio: "pipe", shell: "/bin/sh" });
-        }
-      } catch (applyError) {
-        console.warn("[ListeningStats] spicetify apply failed, user may need to restart Spotify manually");
-      }
-      return {
-        success: true,
-        message: "Update installed successfully! Restart Spotify to apply changes.",
-        needsRestart: true
-      };
-    } catch (error) {
-      console.error("[ListeningStats] Auto-update failed:", error);
-      return {
-        success: false,
-        message: `Update failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-        needsRestart: false
-      };
-    }
-  }
-  function copyDirSync(src, dest) {
-    const entries = fs.readdirSync(src, { withFileTypes: true });
-    for (const entry of entries) {
-      const srcPath = path.join(src, entry.name);
-      const destPath = path.join(dest, entry.name);
-      if (entry.isDirectory()) {
-        fs.mkdirSync(destPath, { recursive: true });
-        copyDirSync(srcPath, destPath);
-      } else {
-        fs.copyFileSync(srcPath, destPath);
+        const textarea = document.createElement("textarea");
+        textarea.value = cmd;
+        textarea.style.position = "fixed";
+        textarea.style.opacity = "0";
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textarea);
+        return true;
+      } catch {
+        console.error("[ListeningStats] Failed to copy to clipboard");
+        return false;
       }
     }
   }
@@ -1145,7 +1028,7 @@ var ListeningStatsApp = (() => {
   };
 
   // src/app/styles.css
-  var styles_default = '/* Listening Stats - Main Styles */\n\n/* ===== Sidebar Icon ===== */\n[href="/listening-stats"] svg {\n  fill: currentColor !important;\n  color: var(--text-subdued) !important;\n}\n[href="/listening-stats"]:hover svg,\n[href="/listening-stats"][aria-current="page"] svg {\n  color: var(--text-base) !important;\n}\n\n/* ===== Page Layout ===== */\n.stats-page {\n  padding: 32px 48px;\n  max-width: 1400px;\n  margin: 0 auto;\n}\n\n/* ===== Header ===== */\n.stats-header {\n  margin-bottom: 24px;\n}\n\n.stats-title {\n  font-size: 2.5rem;\n  font-weight: 700;\n  margin: 0 0 4px 0;\n  letter-spacing: -0.5px;\n}\n\n.stats-subtitle {\n  font-size: 14px;\n  color: var(--text-subdued);\n  margin: 0;\n}\n\n/* ===== Period Tabs (inside hero card) ===== */\n.period-tabs {\n  display: inline-flex;\n  background: rgba(0, 0, 0, 0.15);\n  border-radius: 8px;\n  padding: 4px;\n  margin-top: 16px;\n  gap: 2px;\n}\n\n.period-tab {\n  padding: 8px 16px;\n  border: none;\n  background: transparent;\n  color: rgba(0, 0, 0, 0.6);\n  font-size: 13px;\n  font-weight: 600;\n  border-radius: 6px;\n  cursor: pointer;\n  transition: all 0.2s ease;\n}\n\n.period-tab:hover {\n  color: rgba(0, 0, 0, 0.8);\n  background: rgba(0, 0, 0, 0.1);\n}\n\n.period-tab.active {\n  background: rgba(0, 0, 0, 0.2);\n  color: #000;\n}\n\n/* ===== Overview Cards Row ===== */\n.overview-row {\n  display: grid;\n  grid-template-columns: 2fr 1fr;\n  gap: 16px;\n  margin-bottom: 32px;\n}\n\n.overview-card-list {\n  display: grid;\n  grid-template-columns: 1fr 1fr;\n  grid-template-rows: 1fr 1fr;\n  gap: 16px;\n}\n\n.overview-card {\n  background: var(--background-tinted-base);\n  border-radius: 12px;\n  padding: 20px;\n  display: flex;\n  flex-direction: column;\n}\n\n.overview-card.hero {\n  background: linear-gradient(135deg, var(--spice-button) 0%, #1a9f4a 100%);\n  color: #000;\n}\n\n.overview-card.hero .overview-value {\n  font-size: 3rem;\n}\n\n.overview-value {\n  font-size: 2rem;\n  font-weight: 800;\n  line-height: 1;\n  margin-bottom: 4px;\n}\n\n.overview-card.hero .overview-value {\n  font-size: 2.5rem;\n}\n\n.overview-label {\n  font-size: 11px;\n  font-weight: 600;\n  text-transform: uppercase;\n  letter-spacing: 0.5px;\n  opacity: 0.7;\n}\n\n.overview-card.hero .overview-label {\n  opacity: 0.85;\n}\n\n.overview-secondary {\n  display: flex;\n  gap: 24px;\n  margin-top: auto;\n  padding-top: 16px;\n  border-top: 1px solid rgba(0, 0, 0, 0.1);\n}\n\n.overview-stat {\n  display: flex;\n  flex-direction: column;\n}\n\n.overview-stat-value {\n  font-size: 1.25rem;\n  font-weight: 700;\n}\n\n.overview-stat-label {\n  font-size: 10px;\n  text-transform: uppercase;\n  opacity: 0.6;\n}\n\n/* Colored stats */\n.overview-card .stat-colored {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n}\n\n.stat-icon {\n  width: 40px;\n  height: 40px;\n  border-radius: 10px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  flex-shrink: 0;\n}\n\n.stat-icon svg {\n  width: 20px;\n  height: 20px;\n}\n\n.stat-icon.green {\n  background: rgba(29, 185, 84, 0.15);\n  color: #1db954;\n}\n.stat-icon.orange {\n  background: rgba(243, 156, 18, 0.15);\n  color: #f39c12;\n}\n.stat-icon.purple {\n  background: rgba(155, 89, 182, 0.15);\n  color: #9b59b6;\n}\n.stat-icon.red {\n  background: rgba(231, 76, 60, 0.15);\n  color: #e74c3c;\n}\n\n.stat-text .overview-value {\n  font-size: 1.5rem;\n}\n\n.stat-text .overview-value.green {\n  color: #1db954;\n}\n.stat-text .overview-value.orange {\n  color: #f39c12;\n}\n.stat-text .overview-value.purple {\n  color: #9b59b6;\n}\n.stat-text .overview-value.red {\n  color: #e74c3c;\n}\n\n/* ===== Top Lists Section ===== */\n.top-lists-section {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 24px;\n  margin-bottom: 32px;\n}\n\n.top-list {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  min-height: 400px;\n  display: flex;\n  flex-direction: column;\n  flex: 1 1 300px;\n  min-width: 280px;\n}\n\n.top-list-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  margin-bottom: 20px;\n}\n\n.top-list-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.top-list-title svg {\n  width: 20px;\n  height: 20px;\n  color: var(--text-subdued);\n}\n\n/* ===== Item List ===== */\n.item-list {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n  flex: 1;\n}\n\n.item-row {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 10px 12px;\n  margin: 0 -12px;\n  border-radius: 8px;\n  cursor: pointer;\n  transition: background 0.15s ease;\n}\n\n.item-row:hover {\n  background: rgba(255, 255, 255, 0.07);\n}\n\n.item-rank {\n  width: 24px;\n  font-size: 14px;\n  font-weight: 700;\n  text-align: center;\n  flex-shrink: 0;\n  color: var(--text-subdued);\n}\n\n.item-rank.gold {\n  color: #f1c40f;\n  text-shadow: 0 0 10px rgba(241, 196, 15, 0.3);\n}\n.item-rank.silver {\n  color: #bdc3c7;\n}\n.item-rank.bronze {\n  color: #cd6133;\n}\n\n.item-art {\n  width: 48px;\n  height: 48px;\n  border-radius: 6px;\n  object-fit: cover;\n  background: var(--background-elevated-base);\n  flex-shrink: 0;\n}\n\n.item-art.round {\n  border-radius: 50%;\n}\n\n.item-info {\n  flex: 1;\n  min-width: 0;\n}\n\n.item-name {\n  font-size: 14px;\n  font-weight: 500;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  margin-bottom: 2px;\n}\n\n.item-meta {\n  font-size: 12px;\n  color: var(--text-subdued);\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.item-stats {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n  flex-shrink: 0;\n}\n\n.item-plays {\n  font-size: 13px;\n  font-weight: 600;\n  color: var(--text-base);\n}\n\n.item-time {\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n/* Heart button */\n.heart-btn {\n  background: none;\n  border: none;\n  padding: 6px;\n  cursor: pointer;\n  color: var(--text-subdued);\n  display: flex;\n  align-items: center;\n  border-radius: 50%;\n  transition: all 0.15s ease;\n  flex-shrink: 0;\n}\n\n.heart-btn:hover {\n  color: var(--text-base);\n  background: rgba(255, 255, 255, 0.1);\n}\n\n.heart-btn.liked {\n  color: #1db954;\n}\n\n.heart-btn svg {\n  width: 18px;\n  height: 18px;\n}\n\n/* ===== Activity Chart Section ===== */\n.activity-section {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  margin-bottom: 32px;\n}\n\n.activity-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  margin-bottom: 20px;\n}\n\n.activity-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n}\n\n.activity-peak {\n  font-size: 13px;\n  color: var(--text-subdued);\n}\n\n.activity-peak strong {\n  color: #1db954;\n}\n\n.activity-chart {\n  height: 80px;\n  display: flex;\n  align-items: flex-end;\n  gap: 3px;\n}\n\n.activity-bar {\n  flex: 1;\n  background: rgba(255, 255, 255, 0.08);\n  border-radius: 3px 3px 0 0;\n  min-height: 4px;\n  transition: background 0.15s ease;\n  cursor: pointer;\n  position: relative;\n}\n\n.activity-bar.peak {\n  background: #1db954;\n}\n\n.activity-bar:hover {\n  background: #1db954;\n}\n\n.activity-bar-tooltip {\n  position: absolute;\n  bottom: calc(100% + 8px);\n  left: 50%;\n  transform: translateX(-50%);\n  background: var(--background-elevated-base);\n  padding: 6px 10px;\n  border-radius: 6px;\n  font-size: 11px;\n  white-space: nowrap;\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.15s ease;\n  z-index: 10;\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);\n}\n\n.activity-bar:hover .activity-bar-tooltip {\n  opacity: 1;\n}\n\n.chart-labels {\n  display: flex;\n  justify-content: space-between;\n  font-size: 10px;\n  color: var(--text-subdued);\n  margin-top: 10px;\n  padding: 0 2px;\n}\n\n/* ===== Recently Played ===== */\n.recent-section {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  margin-bottom: 32px;\n}\n\n.recent-header {\n  margin-bottom: 20px;\n}\n\n.recent-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n}\n\n.recent-scroll {\n  display: flex;\n  gap: 16px;\n  overflow-x: auto;\n  padding-bottom: 8px;\n  margin: 0 -24px;\n  padding: 0 24px;\n  scrollbar-width: thin;\n  scrollbar-color: var(--background-tinted-highlight) transparent;\n}\n\n.recent-scroll::-webkit-scrollbar {\n  height: 6px;\n}\n\n.recent-scroll::-webkit-scrollbar-track {\n  background: transparent;\n}\n\n.recent-scroll::-webkit-scrollbar-thumb {\n  background: var(--background-tinted-highlight);\n  border-radius: 3px;\n}\n\n.recent-card {\n  flex-shrink: 0;\n  width: 140px;\n  cursor: pointer;\n  transition: transform 0.15s ease;\n}\n\n.recent-card:hover {\n  transform: translateY(-4px);\n}\n\n.recent-card:hover .recent-art {\n  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);\n}\n\n.recent-art {\n  width: 140px;\n  height: 140px;\n  border-radius: 8px;\n  object-fit: cover;\n  background: var(--background-elevated-base);\n  margin-bottom: 10px;\n  transition: box-shadow 0.15s ease;\n}\n\n.recent-name {\n  font-size: 13px;\n  font-weight: 500;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  margin-bottom: 2px;\n}\n\n.recent-meta {\n  font-size: 12px;\n  color: var(--text-subdued);\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n/* ===== Footer ===== */\n.stats-footer {\n  padding-top: 20px;\n  border-top: 1px solid var(--background-tinted-highlight);\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: 12px;\n}\n\n.footer-left {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n}\n\n.settings-toggle {\n  background: none;\n  border: none;\n  color: var(--text-subdued);\n  font-size: 12px;\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  padding: 8px 12px;\n  border-radius: 6px;\n  transition: all 0.15s ease;\n}\n\n.settings-toggle:hover {\n  background: var(--background-tinted-base);\n  color: var(--text-base);\n}\n\n.settings-toggle svg {\n  width: 14px;\n  height: 14px;\n}\n\n.footer-btn {\n  padding: 8px 14px;\n  background: var(--background-tinted-base);\n  border: none;\n  border-radius: 6px;\n  color: var(--text-subdued);\n  font-size: 12px;\n  font-weight: 500;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.footer-btn:hover {\n  background: var(--background-tinted-highlight);\n  color: var(--text-base);\n}\n\n.footer-btn.primary {\n  background: #1db954;\n  color: #000;\n}\n\n.footer-btn.primary:hover {\n  background: #1ed760;\n}\n\n.footer-btn.danger:hover {\n  background: #e74c3c;\n  color: #fff;\n}\n\n.version-text {\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n/* ===== Settings Panel ===== */\n.settings-panel {\n  margin-top: 16px;\n  padding: 20px;\n  background: var(--background-tinted-base);\n  border-radius: 12px;\n}\n\n.settings-row {\n  display: flex;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.api-status {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  margin-top: 14px;\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n.status-dot {\n  width: 8px;\n  height: 8px;\n  border-radius: 50%;\n}\n\n.status-dot.green {\n  background: #1db954;\n}\n.status-dot.red {\n  background: #e74c3c;\n}\n\n/* ===== Empty State ===== */\n.empty-state {\n  text-align: center;\n  padding: 100px 20px;\n}\n\n.empty-icon {\n  width: 80px;\n  height: 80px;\n  margin: 0 auto 20px;\n  color: var(--text-subdued);\n  opacity: 0.5;\n}\n\n.empty-icon svg {\n  width: 100%;\n  height: 100%;\n}\n\n.empty-title {\n  font-size: 24px;\n  font-weight: 600;\n  margin-bottom: 10px;\n}\n\n.empty-text {\n  color: var(--text-subdued);\n  font-size: 15px;\n}\n\n/* ===== Loading ===== */\n.loading {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  min-height: 400px;\n  color: var(--text-subdued);\n  font-size: 15px;\n}\n\n/* ===== Modal ===== */\n.modal-overlay {\n  position: fixed;\n  top: 0;\n  left: 0;\n  right: 0;\n  bottom: 0;\n  background: rgba(0, 0, 0, 0.75);\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  z-index: 1000;\n  backdrop-filter: blur(4px);\n}\n\n.modal-content {\n  background: var(--background-base);\n  border-radius: 16px;\n  padding: 28px;\n  max-width: 420px;\n  width: 90%;\n  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);\n}\n\n.modal-title {\n  font-size: 20px;\n  font-weight: 700;\n  margin: 0 0 4px;\n}\n\n.modal-subtitle {\n  font-size: 13px;\n  color: var(--text-subdued);\n  margin: 0 0 20px;\n}\n\n.modal-changelog {\n  background: var(--background-tinted-base);\n  border-radius: 8px;\n  padding: 14px;\n  font-size: 13px;\n  max-height: 160px;\n  overflow-y: auto;\n  margin-bottom: 20px;\n  white-space: pre-wrap;\n  line-height: 1.5;\n}\n\n.modal-actions {\n  display: flex;\n  gap: 10px;\n  justify-content: flex-end;\n}\n\n.modal-btn {\n  padding: 10px 20px;\n  border-radius: 20px;\n  border: none;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.modal-btn.primary {\n  background: #1db954;\n  color: #000;\n}\n\n.modal-btn.primary:hover {\n  background: #1ed760;\n}\n\n.modal-btn.secondary {\n  background: var(--background-tinted-highlight);\n  color: var(--text-base);\n}\n\n.modal-btn.secondary:hover {\n  background: var(--background-elevated-highlight);\n}\n\n/* Update Modal Specific */\n.update-modal {\n  max-width: 480px;\n}\n\n.modal-header {\n  text-align: center;\n  margin-bottom: 16px;\n}\n\n.modal-icon {\n  font-size: 48px;\n  margin-bottom: 8px;\n}\n\n.update-modal .modal-title {\n  font-size: 24px;\n  margin-bottom: 4px;\n}\n\n.update-modal .modal-subtitle {\n  font-size: 14px;\n  color: var(--text-subdued);\n  margin: 0;\n}\n\n.modal-instructions {\n  background: var(--background-tinted-base);\n  border-radius: 8px;\n  padding: 14px;\n  margin-bottom: 20px;\n}\n\n.instruction-title {\n  font-size: 12px;\n  font-weight: 600;\n  color: var(--text-subdued);\n  margin-bottom: 8px;\n  text-transform: uppercase;\n}\n\n.instruction-text {\n  font-size: 13px;\n  line-height: 1.6;\n  white-space: pre-line;\n  font-family: monospace;\n}\n\n.update-modal .modal-actions {\n  flex-wrap: wrap;\n  gap: 8px;\n}\n\n.update-modal .modal-btn {\n  flex: 1;\n  min-width: 100px;\n}\n\n/* Update Success Modal */\n.update-success-modal {\n  max-width: 360px;\n}\n\n.update-success-modal .modal-icon.success {\n  width: 64px;\n  height: 64px;\n  background: #1db954;\n  border-radius: 50%;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  margin: 0 auto 16px;\n  font-size: 32px;\n  color: #000;\n  font-weight: bold;\n}\n\n.update-success-modal .modal-title {\n  font-size: 22px;\n}\n\n.modal-body {\n  text-align: center;\n  margin-bottom: 20px;\n  color: var(--text-subdued);\n  font-size: 14px;\n}\n\n.modal-body p {\n  margin: 0;\n}\n\n.modal-body .manual-steps {\n  text-align: left;\n  margin: 12px 0 0;\n  padding-left: 20px;\n  color: var(--text-base);\n}\n\n.modal-body .manual-steps li {\n  margin-bottom: 6px;\n}\n\n.modal-body .manual-steps code {\n  background: var(--background-tinted-base);\n  padding: 2px 6px;\n  border-radius: 4px;\n  font-size: 12px;\n}\n\n/* Updating Overlay */\n.updating-overlay {\n  z-index: 10001;\n}\n\n.updating-content {\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 16px;\n}\n\n.updating-spinner {\n  width: 48px;\n  height: 48px;\n  border: 4px solid var(--background-elevated-highlight);\n  border-top-color: #1db954;\n  border-radius: 50%;\n  animation: spin 1s linear infinite;\n}\n\n@keyframes spin {\n  to {\n    transform: rotate(360deg);\n  }\n}\n\n.updating-text {\n  font-size: 16px;\n  font-weight: 600;\n  color: var(--text-base);\n}\n\n/* Disabled button state */\n.footer-btn:disabled {\n  opacity: 0.5;\n  cursor: not-allowed;\n}\n\n/* ===== Responsive ===== */\n@media (max-width: 1200px) {\n  .overview-row {\n    grid-template-columns: 1fr 1fr;\n  }\n\n  .overview-card-list {\n    grid-column: span 1;\n  }\n}\n\n@media (max-width: 1000px) {\n  .overview-row {\n    grid-template-columns: 1fr;\n  }\n\n  .overview-card-list {\n    grid-column: span 1;\n  }\n}\n\n@media (max-width: 700px) {\n  .stats-page {\n    padding: 24px;\n  }\n\n  .top-list {\n    min-height: auto;\n    flex: 1 1 100%;\n  }\n\n  .overview-row {\n    grid-template-columns: 1fr;\n  }\n\n  .overview-card-list {\n    grid-column: span 1;\n  }\n\n  .overview-card.hero .overview-value {\n    font-size: 2.5rem;\n  }\n\n  .overview-secondary {\n    flex-wrap: wrap;\n  }\n\n  .period-tabs {\n    flex-wrap: wrap;\n  }\n\n  .period-tab {\n    padding: 6px 12px;\n    font-size: 12px;\n  }\n\n  .recent-card {\n    width: 120px;\n  }\n\n  .recent-art {\n    width: 120px;\n    height: 120px;\n  }\n}\n';
+  var styles_default = '/* Listening Stats - Main Styles */\n\n/* ===== Sidebar Icon ===== */\n[href="/listening-stats"] svg {\n  fill: currentColor !important;\n  color: var(--text-subdued) !important;\n}\n[href="/listening-stats"]:hover svg,\n[href="/listening-stats"][aria-current="page"] svg {\n  color: var(--text-base) !important;\n}\n\n/* ===== Page Layout ===== */\n.stats-page {\n  padding: 32px 48px;\n  max-width: 1400px;\n  margin: 0 auto;\n}\n\n/* ===== Header ===== */\n.stats-header {\n  margin-bottom: 24px;\n}\n\n.stats-title {\n  font-size: 2.5rem;\n  font-weight: 700;\n  margin: 0 0 4px 0;\n  letter-spacing: -0.5px;\n}\n\n.stats-subtitle {\n  font-size: 14px;\n  color: var(--text-subdued);\n  margin: 0;\n}\n\n/* ===== Period Tabs (inside hero card) ===== */\n.period-tabs {\n  display: inline-flex;\n  background: rgba(0, 0, 0, 0.15);\n  border-radius: 8px;\n  padding: 4px;\n  margin-top: 16px;\n  gap: 2px;\n}\n\n.period-tab {\n  padding: 8px 16px;\n  border: none;\n  background: transparent;\n  color: rgba(0, 0, 0, 0.6);\n  font-size: 13px;\n  font-weight: 600;\n  border-radius: 6px;\n  cursor: pointer;\n  transition: all 0.2s ease;\n}\n\n.period-tab:hover {\n  color: rgba(0, 0, 0, 0.8);\n  background: rgba(0, 0, 0, 0.1);\n}\n\n.period-tab.active {\n  background: rgba(0, 0, 0, 0.2);\n  color: #000;\n}\n\n/* ===== Overview Cards Row ===== */\n.overview-row {\n  display: grid;\n  grid-template-columns: 2fr 1fr;\n  gap: 16px;\n  margin-bottom: 32px;\n}\n\n.overview-card-list {\n  display: grid;\n  grid-template-columns: 1fr 1fr;\n  grid-template-rows: 1fr 1fr;\n  gap: 16px;\n}\n\n.overview-card {\n  background: var(--background-tinted-base);\n  border-radius: 12px;\n  padding: 20px;\n  display: flex;\n  flex-direction: column;\n}\n\n.overview-card.hero {\n  background: linear-gradient(135deg, var(--spice-button) 0%, #1a9f4a 100%);\n  color: #000;\n}\n\n.overview-card.hero .overview-value {\n  font-size: 3rem;\n}\n\n.overview-value {\n  font-size: 2rem;\n  font-weight: 800;\n  line-height: 1;\n  margin-bottom: 4px;\n}\n\n.overview-card.hero .overview-value {\n  font-size: 2.5rem;\n}\n\n.overview-label {\n  font-size: 11px;\n  font-weight: 600;\n  text-transform: uppercase;\n  letter-spacing: 0.5px;\n  opacity: 0.7;\n}\n\n.overview-card.hero .overview-label {\n  opacity: 0.85;\n}\n\n.overview-secondary {\n  display: flex;\n  gap: 24px;\n  margin-top: auto;\n  padding-top: 16px;\n  border-top: 1px solid rgba(0, 0, 0, 0.1);\n}\n\n.overview-stat {\n  display: flex;\n  flex-direction: column;\n}\n\n.overview-stat-value {\n  font-size: 1.25rem;\n  font-weight: 700;\n}\n\n.overview-stat-label {\n  font-size: 10px;\n  text-transform: uppercase;\n  opacity: 0.6;\n}\n\n/* Colored stats */\n.overview-card .stat-colored {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n}\n\n.stat-icon {\n  width: 40px;\n  height: 40px;\n  border-radius: 10px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  flex-shrink: 0;\n}\n\n.stat-icon svg {\n  width: 20px;\n  height: 20px;\n}\n\n.stat-icon.green {\n  background: rgba(29, 185, 84, 0.15);\n  color: #1db954;\n}\n.stat-icon.orange {\n  background: rgba(243, 156, 18, 0.15);\n  color: #f39c12;\n}\n.stat-icon.purple {\n  background: rgba(155, 89, 182, 0.15);\n  color: #9b59b6;\n}\n.stat-icon.red {\n  background: rgba(231, 76, 60, 0.15);\n  color: #e74c3c;\n}\n\n.stat-text .overview-value {\n  font-size: 1.5rem;\n}\n\n.stat-text .overview-value.green {\n  color: #1db954;\n}\n.stat-text .overview-value.orange {\n  color: #f39c12;\n}\n.stat-text .overview-value.purple {\n  color: #9b59b6;\n}\n.stat-text .overview-value.red {\n  color: #e74c3c;\n}\n\n/* ===== Top Lists Section ===== */\n.top-lists-section {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 24px;\n  margin-bottom: 32px;\n}\n\n.top-list {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  min-height: 400px;\n  display: flex;\n  flex-direction: column;\n  flex: 1 1 300px;\n  min-width: 280px;\n}\n\n.top-list-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  margin-bottom: 20px;\n}\n\n.top-list-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.top-list-title svg {\n  width: 20px;\n  height: 20px;\n  color: var(--text-subdued);\n}\n\n/* ===== Item List ===== */\n.item-list {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n  flex: 1;\n}\n\n.item-row {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 10px 12px;\n  margin: 0 -12px;\n  border-radius: 8px;\n  cursor: pointer;\n  transition: background 0.15s ease;\n}\n\n.item-row:hover {\n  background: rgba(255, 255, 255, 0.07);\n}\n\n.item-rank {\n  width: 24px;\n  font-size: 14px;\n  font-weight: 700;\n  text-align: center;\n  flex-shrink: 0;\n  color: var(--text-subdued);\n}\n\n.item-rank.gold {\n  color: #f1c40f;\n  text-shadow: 0 0 10px rgba(241, 196, 15, 0.3);\n}\n.item-rank.silver {\n  color: #bdc3c7;\n}\n.item-rank.bronze {\n  color: #cd6133;\n}\n\n.item-art {\n  width: 48px;\n  height: 48px;\n  border-radius: 6px;\n  object-fit: cover;\n  background: var(--background-elevated-base);\n  flex-shrink: 0;\n}\n\n.item-art.round {\n  border-radius: 50%;\n}\n\n.item-info {\n  flex: 1;\n  min-width: 0;\n}\n\n.item-name {\n  font-size: 14px;\n  font-weight: 500;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  margin-bottom: 2px;\n}\n\n.item-meta {\n  font-size: 12px;\n  color: var(--text-subdued);\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.item-stats {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n  flex-shrink: 0;\n}\n\n.item-plays {\n  font-size: 13px;\n  font-weight: 600;\n  color: var(--text-base);\n}\n\n.item-time {\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n/* Heart button */\n.heart-btn {\n  background: none;\n  border: none;\n  padding: 6px;\n  cursor: pointer;\n  color: var(--text-subdued);\n  display: flex;\n  align-items: center;\n  border-radius: 50%;\n  transition: all 0.15s ease;\n  flex-shrink: 0;\n}\n\n.heart-btn:hover {\n  color: var(--text-base);\n  background: rgba(255, 255, 255, 0.1);\n}\n\n.heart-btn.liked {\n  color: #1db954;\n}\n\n.heart-btn svg {\n  width: 18px;\n  height: 18px;\n}\n\n/* ===== Activity Chart Section ===== */\n.activity-section {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  margin-bottom: 32px;\n}\n\n.activity-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  margin-bottom: 20px;\n}\n\n.activity-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n}\n\n.activity-peak {\n  font-size: 13px;\n  color: var(--text-subdued);\n}\n\n.activity-peak strong {\n  color: #1db954;\n}\n\n.activity-chart {\n  height: 80px;\n  display: flex;\n  align-items: flex-end;\n  gap: 3px;\n}\n\n.activity-bar {\n  flex: 1;\n  background: rgba(255, 255, 255, 0.08);\n  border-radius: 3px 3px 0 0;\n  min-height: 4px;\n  transition: background 0.15s ease;\n  cursor: pointer;\n  position: relative;\n}\n\n.activity-bar.peak {\n  background: #1db954;\n}\n\n.activity-bar:hover {\n  background: #1db954;\n}\n\n.activity-bar-tooltip {\n  position: absolute;\n  bottom: calc(100% + 8px);\n  left: 50%;\n  transform: translateX(-50%);\n  background: var(--background-elevated-base);\n  padding: 6px 10px;\n  border-radius: 6px;\n  font-size: 11px;\n  white-space: nowrap;\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.15s ease;\n  z-index: 10;\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);\n}\n\n.activity-bar:hover .activity-bar-tooltip {\n  opacity: 1;\n}\n\n.chart-labels {\n  display: flex;\n  justify-content: space-between;\n  font-size: 10px;\n  color: var(--text-subdued);\n  margin-top: 10px;\n  padding: 0 2px;\n}\n\n/* ===== Recently Played ===== */\n.recent-section {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  margin-bottom: 32px;\n}\n\n.recent-header {\n  margin-bottom: 20px;\n}\n\n.recent-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n}\n\n.recent-scroll {\n  display: flex;\n  gap: 16px;\n  overflow-x: auto;\n  padding-bottom: 8px;\n  margin: 0 -24px;\n  padding: 0 24px;\n  scrollbar-width: thin;\n  scrollbar-color: var(--background-tinted-highlight) transparent;\n}\n\n.recent-scroll::-webkit-scrollbar {\n  height: 6px;\n}\n\n.recent-scroll::-webkit-scrollbar-track {\n  background: transparent;\n}\n\n.recent-scroll::-webkit-scrollbar-thumb {\n  background: var(--background-tinted-highlight);\n  border-radius: 3px;\n}\n\n.recent-card {\n  flex-shrink: 0;\n  width: 140px;\n  cursor: pointer;\n  transition: transform 0.15s ease;\n}\n\n.recent-card:hover {\n  transform: translateY(-4px);\n}\n\n.recent-card:hover .recent-art {\n  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);\n}\n\n.recent-art {\n  width: 140px;\n  height: 140px;\n  border-radius: 8px;\n  object-fit: cover;\n  background: var(--background-elevated-base);\n  margin-bottom: 10px;\n  transition: box-shadow 0.15s ease;\n}\n\n.recent-name {\n  font-size: 13px;\n  font-weight: 500;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  margin-bottom: 2px;\n}\n\n.recent-meta {\n  font-size: 12px;\n  color: var(--text-subdued);\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n/* ===== Footer ===== */\n.stats-footer {\n  padding-top: 20px;\n  border-top: 1px solid var(--background-tinted-highlight);\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: 12px;\n}\n\n.footer-left {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n}\n\n.settings-toggle {\n  background: none;\n  border: none;\n  color: var(--text-subdued);\n  font-size: 12px;\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  padding: 8px 12px;\n  border-radius: 6px;\n  transition: all 0.15s ease;\n}\n\n.settings-toggle:hover {\n  background: var(--background-tinted-base);\n  color: var(--text-base);\n}\n\n.settings-toggle svg {\n  width: 14px;\n  height: 14px;\n}\n\n.footer-btn {\n  padding: 8px 14px;\n  background: var(--background-tinted-base);\n  border: none;\n  border-radius: 6px;\n  color: var(--text-subdued);\n  font-size: 12px;\n  font-weight: 500;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.footer-btn:hover {\n  background: var(--background-tinted-highlight);\n  color: var(--text-base);\n}\n\n.footer-btn.primary {\n  background: #1db954;\n  color: #000;\n}\n\n.footer-btn.primary:hover {\n  background: #1ed760;\n}\n\n.footer-btn.danger:hover {\n  background: #e74c3c;\n  color: #fff;\n}\n\n.version-text {\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n/* ===== Settings Panel ===== */\n.settings-panel {\n  margin-top: 16px;\n  padding: 20px;\n  background: var(--background-tinted-base);\n  border-radius: 12px;\n}\n\n.settings-row {\n  display: flex;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.api-status {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  margin-top: 14px;\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n.status-dot {\n  width: 8px;\n  height: 8px;\n  border-radius: 50%;\n}\n\n.status-dot.green {\n  background: #1db954;\n}\n.status-dot.red {\n  background: #e74c3c;\n}\n\n/* ===== Empty State ===== */\n.empty-state {\n  text-align: center;\n  padding: 100px 20px;\n}\n\n.empty-icon {\n  width: 80px;\n  height: 80px;\n  margin: 0 auto 20px;\n  color: var(--text-subdued);\n  opacity: 0.5;\n}\n\n.empty-icon svg {\n  width: 100%;\n  height: 100%;\n}\n\n.empty-title {\n  font-size: 24px;\n  font-weight: 600;\n  margin-bottom: 10px;\n}\n\n.empty-text {\n  color: var(--text-subdued);\n  font-size: 15px;\n}\n\n/* ===== Loading ===== */\n.loading {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  min-height: 400px;\n  color: var(--text-subdued);\n  font-size: 15px;\n}\n\n/* ===== Modal ===== */\n.modal-overlay {\n  position: fixed;\n  top: 0;\n  left: 0;\n  right: 0;\n  bottom: 0;\n  background: rgba(0, 0, 0, 0.75);\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  z-index: 1000;\n  backdrop-filter: blur(4px);\n}\n\n/* Floating update popup - non-blocking */\n.modal-overlay.floating {\n  background: transparent;\n  backdrop-filter: none;\n  pointer-events: none;\n  align-items: flex-start;\n  justify-content: flex-end;\n  padding: 20px;\n}\n\n.modal-overlay.floating .modal-content {\n  pointer-events: auto;\n  margin-top: 60px;\n  animation: slideIn 0.3s ease-out;\n}\n\n@keyframes slideIn {\n  from {\n    opacity: 0;\n    transform: translateX(20px);\n  }\n  to {\n    opacity: 1;\n    transform: translateX(0);\n  }\n}\n\n.modal-content {\n  background: var(--background-base);\n  border-radius: 16px;\n  padding: 28px;\n  max-width: 420px;\n  width: 90%;\n  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);\n}\n\n.modal-title {\n  font-size: 20px;\n  font-weight: 700;\n  margin: 0 0 4px;\n}\n\n.modal-subtitle {\n  font-size: 13px;\n  color: var(--text-subdued);\n  margin: 0 0 20px;\n}\n\n.modal-changelog {\n  background: var(--background-tinted-base);\n  border-radius: 8px;\n  padding: 14px;\n  font-size: 13px;\n  max-height: 160px;\n  overflow-y: auto;\n  margin-bottom: 20px;\n  white-space: pre-wrap;\n  line-height: 1.5;\n}\n\n.modal-actions {\n  display: flex;\n  gap: 10px;\n  justify-content: flex-end;\n}\n\n.modal-btn {\n  padding: 10px 20px;\n  border-radius: 20px;\n  border: none;\n  font-size: 13px;\n  font-weight: 600;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.modal-btn.primary {\n  background: #1db954;\n  color: #000;\n}\n\n.modal-btn.primary:hover {\n  background: #1ed760;\n}\n\n.modal-btn.secondary {\n  background: var(--background-tinted-highlight);\n  color: var(--text-base);\n}\n\n.modal-btn.secondary:hover {\n  background: var(--background-elevated-highlight);\n}\n\n/* Update Modal Specific */\n.update-modal {\n  max-width: 480px;\n}\n\n.modal-header {\n  text-align: center;\n  margin-bottom: 16px;\n}\n\n.modal-icon {\n  font-size: 48px;\n  margin-bottom: 8px;\n}\n\n.update-modal .modal-title {\n  font-size: 24px;\n  margin-bottom: 4px;\n}\n\n.update-modal .modal-subtitle {\n  font-size: 14px;\n  color: var(--text-subdued);\n  margin: 0;\n}\n\n.modal-instructions {\n  background: var(--background-tinted-base);\n  border-radius: 8px;\n  padding: 14px;\n  margin-bottom: 20px;\n}\n\n.instruction-title {\n  font-size: 12px;\n  font-weight: 600;\n  color: var(--text-subdued);\n  margin-bottom: 8px;\n  text-transform: uppercase;\n}\n\n.instruction-text {\n  font-size: 13px;\n  line-height: 1.6;\n  white-space: pre-line;\n  font-family: monospace;\n}\n\n.update-modal .modal-actions {\n  flex-wrap: wrap;\n  gap: 8px;\n}\n\n.update-modal .modal-btn {\n  flex: 1;\n  min-width: 100px;\n}\n\n/* Update Success Modal */\n.update-success-modal {\n  max-width: 360px;\n}\n\n.update-success-modal .modal-icon.success {\n  width: 64px;\n  height: 64px;\n  background: #1db954;\n  border-radius: 50%;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  margin: 0 auto 16px;\n  font-size: 32px;\n  color: #000;\n  font-weight: bold;\n}\n\n.update-success-modal .modal-title {\n  font-size: 22px;\n}\n\n.modal-body {\n  text-align: center;\n  margin-bottom: 20px;\n  color: var(--text-subdued);\n  font-size: 14px;\n}\n\n.modal-body p {\n  margin: 0;\n}\n\n.modal-body .manual-steps,\n.modal-body .update-steps {\n  text-align: left;\n  margin: 12px 0 0;\n  padding-left: 20px;\n  color: var(--text-base);\n}\n\n.modal-body .manual-steps li,\n.modal-body .update-steps li {\n  margin-bottom: 6px;\n  line-height: 1.5;\n}\n\n.modal-body .manual-steps code {\n  background: var(--background-tinted-base);\n  padding: 2px 6px;\n  border-radius: 4px;\n  font-size: 12px;\n}\n\n/* Updating Overlay */\n.updating-overlay {\n  z-index: 10001;\n}\n\n.updating-content {\n  display: flex;\n  flex-direction: column;\n  align-items: center;\n  gap: 16px;\n}\n\n.updating-spinner {\n  width: 48px;\n  height: 48px;\n  border: 4px solid var(--background-elevated-highlight);\n  border-top-color: #1db954;\n  border-radius: 50%;\n  animation: spin 1s linear infinite;\n}\n\n@keyframes spin {\n  to {\n    transform: rotate(360deg);\n  }\n}\n\n.updating-text {\n  font-size: 16px;\n  font-weight: 600;\n  color: var(--text-base);\n}\n\n/* Disabled button state */\n.footer-btn:disabled {\n  opacity: 0.5;\n  cursor: not-allowed;\n}\n\n/* ===== Responsive ===== */\n@media (max-width: 1200px) {\n  .overview-row {\n    grid-template-columns: 1fr 1fr;\n  }\n\n  .overview-card-list {\n    grid-column: span 1;\n  }\n}\n\n@media (max-width: 1000px) {\n  .overview-row {\n    grid-template-columns: 1fr;\n  }\n\n  .overview-card-list {\n    grid-column: span 1;\n  }\n}\n\n@media (max-width: 700px) {\n  .stats-page {\n    padding: 24px;\n  }\n\n  .top-list {\n    min-height: auto;\n    flex: 1 1 100%;\n  }\n\n  .overview-row {\n    grid-template-columns: 1fr;\n  }\n\n  .overview-card-list {\n    grid-column: span 1;\n  }\n\n  .overview-card.hero .overview-value {\n    font-size: 2.5rem;\n  }\n\n  .overview-secondary {\n    flex-wrap: wrap;\n  }\n\n  .period-tabs {\n    flex-wrap: wrap;\n  }\n\n  .period-tab {\n    padding: 6px 12px;\n    font-size: 12px;\n  }\n\n  .recent-card {\n    width: 120px;\n  }\n\n  .recent-art {\n    width: 120px;\n    height: 120px;\n  }\n}\n';
 
   // src/app/styles.ts
   function injectStyles() {
@@ -1236,35 +1119,19 @@ var ListeningStatsApp = (() => {
     constructor(props) {
       super(props);
       this.pollInterval = null;
-      // Auto-check for updates and apply automatically if available
+      // Auto-check for updates on startup
       this.checkAndAutoUpdate = async () => {
         if (!shouldCheckForUpdate()) return;
         const info = await checkForUpdates();
-        if (!info.available || !info.downloadUrl) return;
+        if (!info.available) return;
         this.setState({ updateInfo: info });
-        if (isAutoUpdateAvailable()) {
-          console.log("[ListeningStats] Update available, auto-updating...");
-          this.setState({ isUpdating: true });
-          const result = await performAutoUpdate(info.downloadUrl);
-          this.setState({ isUpdating: false });
-          if (result.success) {
-            Spicetify.showNotification("ListeningStats updated! Restart Spotify to apply.", false, 5e3);
-          } else {
-            console.error("[ListeningStats] Auto-update failed:", result.message);
-            if (!wasVersionDismissed(info.latestVersion)) {
-              this.setState({ showUpdateModal: true });
-            }
-          }
-        } else {
-          if (!wasVersionDismissed(info.latestVersion)) {
-            this.setState({ showUpdateModal: true });
-          }
+        if (!wasVersionDismissed(info.latestVersion)) {
+          this.setState({ showUpdateModal: true });
         }
       };
       // Manual check for updates (from settings button)
       this.checkUpdatesManual = async () => {
         clearDismissedVersion();
-        this.setState({ updateError: null });
         const info = await checkForUpdates();
         this.setState({ updateInfo: info });
         if (info.available) {
@@ -1273,22 +1140,15 @@ var ListeningStatsApp = (() => {
           Spicetify.showNotification("You are on the latest version!");
         }
       };
-      // Perform update after user confirms
+      // Perform update - copy command to clipboard
       this.performUpdate = async () => {
-        const { updateInfo } = this.state;
-        if (!updateInfo?.downloadUrl) return;
-        this.setState({ showUpdateConfirmModal: false, isUpdating: true, updateError: null });
-        if (isAutoUpdateAvailable()) {
-          const result = await performAutoUpdate(updateInfo.downloadUrl);
-          this.setState({ isUpdating: false });
-          if (result.success) {
-            Spicetify.showNotification("Update installed! Restart Spotify to apply.", false, 5e3);
-          } else {
-            this.setState({ updateError: result.message });
-            Spicetify.showNotification("Update failed: " + result.message, true);
-          }
+        this.setState({ showUpdateConfirmModal: false, showUpdateModal: false });
+        const copied = await copyInstallCommand();
+        if (copied) {
+          Spicetify.showNotification("Install command copied! Paste in terminal to update.", false, 5e3);
         } else {
-          this.setState({ isUpdating: false, showUpdateModal: true });
+          Spicetify.showNotification("Failed to copy command. Check console for install command.", true);
+          console.log("[ListeningStats] Install command:", getInstallCommand());
         }
       };
       this.loadStats = async () => {
@@ -1331,9 +1191,7 @@ var ListeningStatsApp = (() => {
         showUpdateConfirmModal: false,
         showSettings: false,
         apiAvailable: true,
-        lastUpdateTimestamp: 0,
-        isUpdating: false,
-        updateError: null
+        lastUpdateTimestamp: 0
       };
     }
     componentDidMount() {
@@ -1373,8 +1231,7 @@ var ListeningStatsApp = (() => {
         showUpdateSuccessModal,
         showUpdateConfirmModal,
         showSettings,
-        apiAvailable,
-        isUpdating
+        apiAvailable
       } = this.state;
       const React = Spicetify.React;
       if (loading) {
@@ -1436,68 +1293,51 @@ var ListeningStatsApp = (() => {
           },
           /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-header" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-icon" }, "\u{1F389}"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-title" }, "Update Available!"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-subtitle" }, "v", updateInfo.currentVersion, " \u2192 v", updateInfo.latestVersion)),
           updateInfo.changelog && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-changelog" }, updateInfo.changelog),
-          /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-body" }, /* @__PURE__ */ Spicetify.React.createElement("p", null, "Would you like to update now?")),
+          /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-body" }, /* @__PURE__ */ Spicetify.React.createElement("p", null, "This will copy an install command to your clipboard. Paste it in your terminal to update.")),
           /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-actions" }, /* @__PURE__ */ Spicetify.React.createElement(
             "button",
             {
               className: "modal-btn secondary",
               onClick: () => this.setState({ showUpdateConfirmModal: false })
             },
-            "Later"
+            "Cancel"
           ), /* @__PURE__ */ Spicetify.React.createElement(
             "button",
             {
               className: "modal-btn primary",
               onClick: this.performUpdate
             },
-            "Update Now"
+            "\u{1F4CB} Copy Install Command"
           ))
         )
-      ), showUpdateModal && updateInfo && /* @__PURE__ */ Spicetify.React.createElement(
+      ), showUpdateModal && updateInfo && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-overlay floating" }, /* @__PURE__ */ Spicetify.React.createElement(
         "div",
         {
-          className: "modal-overlay",
-          onClick: () => {
-            dismissVersion(updateInfo.latestVersion);
-            this.setState({ showUpdateModal: false });
-          }
+          className: "modal-content update-modal",
+          onClick: (e) => e.stopPropagation()
         },
-        /* @__PURE__ */ Spicetify.React.createElement(
-          "div",
+        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-header" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-icon" }, "\u{1F389}"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-title" }, "Update Available!"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-subtitle" }, "v", updateInfo.currentVersion, " \u2192 v", updateInfo.latestVersion)),
+        updateInfo.changelog && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-changelog" }, updateInfo.changelog),
+        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-body" }, /* @__PURE__ */ Spicetify.React.createElement("p", null, /* @__PURE__ */ Spicetify.React.createElement("strong", null, "How to update:")), /* @__PURE__ */ Spicetify.React.createElement("ol", { className: "update-steps" }, /* @__PURE__ */ Spicetify.React.createElement("li", null, 'Click "Copy Install Command" below'), /* @__PURE__ */ Spicetify.React.createElement("li", null, "Open a terminal"), /* @__PURE__ */ Spicetify.React.createElement("li", null, "Paste and run the command"), /* @__PURE__ */ Spicetify.React.createElement("li", null, "Restart Spotify"))),
+        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-actions" }, /* @__PURE__ */ Spicetify.React.createElement(
+          "button",
           {
-            className: "modal-content update-modal",
-            onClick: (e) => e.stopPropagation()
+            className: "modal-btn secondary",
+            onClick: () => {
+              dismissVersion(updateInfo.latestVersion);
+              this.setState({ showUpdateModal: false });
+            }
           },
-          /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-header" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-icon" }, "\u{1F389}"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-title" }, "Update Available!"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-subtitle" }, "v", updateInfo.currentVersion, " \u2192 v", updateInfo.latestVersion)),
-          updateInfo.changelog && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-changelog" }, updateInfo.changelog),
-          /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-body" }, /* @__PURE__ */ Spicetify.React.createElement("p", null, "Auto-update is not available. Please update manually:"), /* @__PURE__ */ Spicetify.React.createElement("ol", { className: "manual-steps" }, /* @__PURE__ */ Spicetify.React.createElement("li", null, "Download the update"), /* @__PURE__ */ Spicetify.React.createElement("li", null, "Extract to your CustomApps folder"), /* @__PURE__ */ Spicetify.React.createElement("li", null, "Run ", /* @__PURE__ */ Spicetify.React.createElement("code", null, "spicetify apply")))),
-          /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-actions" }, /* @__PURE__ */ Spicetify.React.createElement(
-            "button",
-            {
-              className: "modal-btn secondary",
-              onClick: () => {
-                dismissVersion(updateInfo.latestVersion);
-                this.setState({ showUpdateModal: false });
-              }
-            },
-            "Later"
-          ), updateInfo.releaseUrl && /* @__PURE__ */ Spicetify.React.createElement(
-            "button",
-            {
-              className: "modal-btn secondary",
-              onClick: () => window.open(updateInfo.releaseUrl, "_blank")
-            },
-            "View Release"
-          ), updateInfo.downloadUrl && /* @__PURE__ */ Spicetify.React.createElement(
-            "button",
-            {
-              className: "modal-btn primary",
-              onClick: () => window.open(updateInfo.downloadUrl, "_blank")
-            },
-            "Download"
-          ))
-        )
-      ), isUpdating && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "modal-overlay updating-overlay" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "updating-content" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "updating-spinner" }), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "updating-text" }, "Updating..."))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-header" }, /* @__PURE__ */ Spicetify.React.createElement("h1", { className: "stats-title" }, "Listening Stats"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "stats-subtitle" }, "Your personal music analytics")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card hero" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value" }, formatDurationLong(stats.totalTimeMs)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Time Listened"), periodTabs, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-secondary" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.trackCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Tracks")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.uniqueArtistCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Artists")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.uniqueTrackCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Unique")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value green" }, "$", payout), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Paid to Artists")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value orange" }, stats.streakDays), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Day Streak")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, stats.newArtistsCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "New Artists")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value red" }, Math.floor(stats.skipRate * 100), "%"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Skip Rate")))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-lists-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.music } }), "Top Tracks")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topTracks.slice(0, TOP_ITEMS_COUNT).map((t, i) => /* @__PURE__ */ Spicetify.React.createElement(
+          "Dismiss"
+        ), /* @__PURE__ */ Spicetify.React.createElement(
+          "button",
+          {
+            className: "modal-btn primary",
+            onClick: this.performUpdate
+          },
+          "\u{1F4CB} Copy Install Command"
+        ))
+      )), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-header" }, /* @__PURE__ */ Spicetify.React.createElement("h1", { className: "stats-title" }, "Listening Stats"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "stats-subtitle" }, "Your personal music analytics")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card hero" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value" }, formatDurationLong(stats.totalTimeMs)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Time Listened"), periodTabs, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-secondary" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.trackCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Tracks")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.uniqueArtistCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Artists")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.uniqueTrackCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Unique")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value green" }, "$", payout), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Paid to Artists")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value orange" }, stats.streakDays), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Day Streak")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, stats.newArtistsCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "New Artists")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value red" }, Math.floor(stats.skipRate * 100), "%"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Skip Rate")))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-lists-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.music } }), "Top Tracks")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topTracks.slice(0, TOP_ITEMS_COUNT).map((t, i) => /* @__PURE__ */ Spicetify.React.createElement(
         "div",
         {
           key: t.trackUri,
@@ -1607,10 +1447,9 @@ var ListeningStatsApp = (() => {
         "button",
         {
           className: "footer-btn",
-          onClick: this.checkUpdatesManual,
-          disabled: isUpdating
+          onClick: this.checkUpdatesManual
         },
-        isUpdating ? "Updating..." : "Check Updates"
+        "Check Updates"
       ), /* @__PURE__ */ Spicetify.React.createElement(
         "button",
         {
