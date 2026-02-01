@@ -98,6 +98,10 @@ All data stored locally in IndexedDB. Nothing sent to external servers.
 
 API calls go directly to `api.spotify.com` using your existing Spotify session, no proxy, no data collection.
 
+## AI
+AI was only used to write documentation (like this readme or comments, english is not my main language so it's easier to let AI do this), write the install scripts and generate the svg icons.
+No AI was used to develop this project!
+
 ## Contributing
 
 1. Fork the repo
@@ -109,4 +113,4 @@ API calls go directly to `api.spotify.com` using your existing Spotify session, 
 
 ## License
 
-MIT © xndr
+MIT
