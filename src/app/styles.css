@@ -92,8 +92,12 @@
 }
 
 .overview-card.hero {
-  background: linear-gradient(135deg, #1db954 0%, #1a9f4a 100%);
+  background: linear-gradient(135deg, var(--spice-button) 0%, #1a9f4a 100%);
   color: #000;
+}
+
+.overview-card.hero .overview-value {
+  font-size: 3rem;
 }
 
 .overview-value {
@@ -201,8 +205,8 @@
 
 /* ===== Top Lists Section ===== */
 .top-lists-section {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  display: flex;
+  flex-wrap: wrap;
   gap: 24px;
   margin-bottom: 32px;
 }
@@ -214,6 +218,8 @@
   min-height: 400px;
   display: flex;
   flex-direction: column;
+  flex: 1 1 300px;
+  min-width: 280px;
 }
 
 .top-list-header {
@@ -779,14 +785,6 @@
 }
 
 @media (max-width: 1000px) {
-  .top-lists-section {
-    grid-template-columns: 1fr;
-  }
-
-  .top-list {
-    width: 100%;
-  }
-
   .overview-row {
     grid-template-columns: 1fr;
   }
@@ -801,13 +799,9 @@
     padding: 24px;
   }
 
-  .top-lists-section {
-    grid-template-columns: 1fr;
-  }
-
   .top-list {
     min-height: auto;
-    width: 100%;
+    flex: 1 1 100%;
   }
 
   .overview-row {
@@ -816,6 +810,10 @@
 
   .overview-card-list {
     grid-column: span 1;
+  }
+
+  .overview-card.hero .overview-value {
+    font-size: 2.5rem;
   }
 
   .overview-secondary {
