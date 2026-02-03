@@ -25,3 +25,6 @@ npm-debug.log*
 # OS files
 Thumbs.db
 Development.md
+
+# Changelog Editor
+ChangelogEditor/

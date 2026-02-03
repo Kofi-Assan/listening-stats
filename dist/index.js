@@ -822,79 +822,6 @@ var ListeningStatsApp = (() => {
     }
   }
 
-  // src/services/tracker.ts
-  var enrichmentInProgress = false;
-  var enrichmentCycle = "audioFeatures";
-  async function runBackgroundEnrichment(force = false) {
-    if (enrichmentInProgress) return;
-    if (!isApiAvailable()) {
-      console.log("[ListeningStats] Skipping enrichment - API rate limited");
-      return;
-    }
-    if (!force && !Spicetify.Player.isPlaying()) {
-      console.log("[ListeningStats] Skipping enrichment - not playing");
-      return;
-    }
-    enrichmentInProgress = true;
-    try {
-      const events = await getEventsNeedingEnrichment(20);
-      if (events.length === 0) {
-        return;
-      }
-      console.log(`[ListeningStats] Enriching ${events.length} events (${enrichmentCycle} cycle)...`);
-      let updatedCount = 0;
-      if (enrichmentCycle === "audioFeatures") {
-        const trackUris = [...new Set(
-          events.filter((e) => !e.audioFeatures && e.trackUri.startsWith("spotify:track:")).map((e) => e.trackUri)
-        )];
-        if (trackUris.length > 0) {
-          try {
-            const audioFeaturesMap = await fetchAudioFeaturesBatch(trackUris);
-            console.log(`[ListeningStats] Fetched audio features for ${audioFeaturesMap.size}/${trackUris.length} tracks`);
-            for (const event of events) {
-              if (!event.id || event.audioFeatures) continue;
-              if (audioFeaturesMap.has(event.trackUri)) {
-                await updatePlayEvent(event.id, { audioFeatures: audioFeaturesMap.get(event.trackUri) });
-                updatedCount++;
-              }
-            }
-          } catch (error) {
-            console.warn("[ListeningStats] Audio features batch failed:", error);
-          }
-        }
-        enrichmentCycle = "genres";
-      } else {
-        const artistUris = [...new Set(
-          events.filter((e) => !e.genres && e.artistUri).map((e) => e.artistUri)
-        )];
-        if (artistUris.length > 0) {
-          try {
-            const genresMap = await fetchArtistGenresBatch(artistUris);
-            console.log(`[ListeningStats] Fetched genres for ${genresMap.size}/${artistUris.length} artists`);
-            for (const event of events) {
-              if (!event.id || event.genres) continue;
-              if (genresMap.has(event.artistUri)) {
-                await updatePlayEvent(event.id, { genres: genresMap.get(event.artistUri) });
-                updatedCount++;
-              }
-            }
-          } catch (error) {
-            console.warn("[ListeningStats] Artist genres batch failed:", error);
-          }
-        }
-        enrichmentCycle = "audioFeatures";
-      }
-      if (updatedCount > 0) {
-        console.log(`[ListeningStats] Enrichment complete: updated ${updatedCount} events`);
-      }
-    } catch (error) {
-      console.error("[ListeningStats] Background enrichment failed:", error);
-    } finally {
-      enrichmentInProgress = false;
-    }
-  }
-  var ENRICHMENT_INTERVAL_MS = 15 * 60 * 1e3;
-
   // src/services/updater.ts
   var GITHUB_REPO = "Xndr2/listening-stats";
   var STORAGE_KEY = "listening-stats:lastUpdateCheck";
@@ -902,7 +829,7 @@ var ListeningStatsApp = (() => {
   var INSTALL_CMD_WINDOWS = `iwr -useb 'https://raw.githubusercontent.com/${GITHUB_REPO}/main/install.ps1' | iex`;
   function getCurrentVersion() {
     try {
-      return "1.0.20";
+      return "1.1.2";
     } catch {
       return "0.0.0";
     }
@@ -985,21 +912,6 @@ var ListeningStatsApp = (() => {
       }
     }
   }
-
-  // src/app/icons.ts
-  var Icons = {
-    heart: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M1.69 2A4.582 4.582 0 018 2.023 4.583 4.583 0 0114.31 2a4.583 4.583 0 010 6.496L8 14.153l-6.31-5.657A4.583 4.583 0 011.69 2m6.31 10.06l5.715-5.12a3.087 3.087 0 00-4.366-4.371L8 3.839l-1.35-1.27a3.087 3.087 0 00-4.366 4.37z"/></svg>',
-    heartFilled: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M15.724 4.22A4.313 4.313 0 0012.192.814a4.269 4.269 0 00-3.622 1.13.837.837 0 01-1.14 0 4.272 4.272 0 00-6.21 5.855l5.916 7.05a1.128 1.128 0 001.727 0l5.916-7.05a4.228 4.228 0 00.945-3.577z"/></svg>',
-    money: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>',
-    fire: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 23c-3.866 0-7-3.358-7-7.5 0-2.09.705-3.905 1.949-5.267A7.834 7.834 0 009 8.5c0-2.485 1.136-4.5 3-6 0 3 2.5 5.5 5 7 .667-1 1-2 1-3 2 2.5 3 5.5 3 8.5 0 4.142-3.134 7.5-7 7.5h-2z"/></svg>',
-    users: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>',
-    skip: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>',
-    headphones: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1a9 9 0 00-9 9v7c0 1.66 1.34 3 3 3h3v-8H5v-2c0-3.87 3.13-7 7-7s7 3.13 7 7v2h-4v8h3c1.66 0 3-1.34 3-3v-7a9 9 0 00-9-9z"/></svg>',
-    settings: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>',
-    chevronDown: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>',
-    music: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>',
-    album: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z"/></svg>'
-  };
 
   // src/app/styles.css
   var styles_default = '/* Listening Stats - Main Styles */\n\n/* ===== Sidebar Icon ===== */\n[href="/listening-stats"] svg {\n  fill: currentColor !important;\n  color: var(--text-subdued) !important;\n}\n[href="/listening-stats"]:hover svg,\n[href="/listening-stats"][aria-current="page"] svg {\n  color: var(--text-base) !important;\n}\n\n/* ===== Page Layout ===== */\n.stats-page {\n  padding: 32px 48px;\n  max-width: 1400px;\n  margin: 0 auto;\n}\n\n/* ===== Header ===== */\n.stats-header {\n  margin-bottom: 24px;\n}\n\n.stats-title {\n  font-size: 2.5rem;\n  font-weight: 700;\n  margin: 0 0 4px 0;\n  letter-spacing: -0.5px;\n}\n\n.stats-subtitle {\n  font-size: 14px;\n  color: var(--text-subdued);\n  margin: 0;\n}\n\n/* ===== Period Tabs (inside hero card) ===== */\n.period-tabs {\n  display: inline-flex;\n  background: rgba(0, 0, 0, 0.15);\n  border-radius: 8px;\n  padding: 4px;\n  margin-top: 16px;\n  gap: 2px;\n}\n\n.period-tab {\n  padding: 8px 16px;\n  border: none;\n  background: transparent;\n  color: rgba(0, 0, 0, 0.6);\n  font-size: 13px;\n  font-weight: 600;\n  border-radius: 6px;\n  cursor: pointer;\n  transition: all 0.2s ease;\n}\n\n.period-tab:hover {\n  color: rgba(0, 0, 0, 0.8);\n  background: rgba(0, 0, 0, 0.1);\n}\n\n.period-tab.active {\n  background: rgba(0, 0, 0, 0.2);\n  color: #000;\n}\n\n/* ===== Overview Cards Row ===== */\n.overview-row {\n  display: grid;\n  grid-template-columns: 2fr 1fr;\n  gap: 16px;\n  margin-bottom: 32px;\n}\n\n.overview-card-list {\n  display: grid;\n  grid-template-columns: 1fr 1fr;\n  grid-template-rows: 1fr 1fr;\n  gap: 16px;\n}\n\n.overview-card {\n  background: var(--background-tinted-base);\n  border-radius: 12px;\n  padding: 20px;\n  display: flex;\n  flex-direction: column;\n}\n\n.overview-card.hero {\n  background: linear-gradient(135deg, var(--spice-button) 0%, #1a9f4a 100%);\n  color: #000;\n}\n\n.overview-card.hero .overview-value {\n  font-size: 3rem;\n}\n\n.overview-value {\n  font-size: 2rem;\n  font-weight: 800;\n  line-height: 1;\n  margin-bottom: 4px;\n}\n\n.overview-card.hero .overview-value {\n  font-size: 2.5rem;\n}\n\n.overview-label {\n  font-size: 11px;\n  font-weight: 600;\n  text-transform: uppercase;\n  letter-spacing: 0.5px;\n  opacity: 0.7;\n}\n\n.overview-label-tooltip {\n  font-size: 8px;\n  font-weight: 500;\n  text-transform: uppercase;\n  letter-spacing: 0.5px;\n  opacity: 0.7;\n}\n\n.overview-card.hero .overview-label {\n  opacity: 0.85;\n}\n\n.overview-secondary {\n  display: flex;\n  gap: 24px;\n  margin-top: auto;\n  padding-top: 16px;\n  border-top: 1px solid rgba(0, 0, 0, 0.1);\n}\n\n.overview-stat {\n  display: flex;\n  flex-direction: column;\n}\n\n.overview-stat-value {\n  font-size: 1.25rem;\n  font-weight: 700;\n}\n\n.overview-stat-label {\n  font-size: 10px;\n  text-transform: uppercase;\n  opacity: 0.6;\n}\n\n/* Colored stats */\n.overview-card .stat-colored {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  margin-top: auto;\n  margin-bottom: auto;\n}\n\n.stat-icon {\n  width: 40px;\n  height: 40px;\n  border-radius: 10px;\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  flex-shrink: 0;\n}\n\n.stat-icon svg {\n  width: 20px;\n  height: 20px;\n}\n\n.stat-icon.green {\n  background: rgba(29, 185, 84, 0.15);\n  color: #1db954;\n}\n.stat-icon.orange {\n  background: rgba(243, 156, 18, 0.15);\n  color: #f39c12;\n}\n.stat-icon.purple {\n  background: rgba(155, 89, 182, 0.15);\n  color: #9b59b6;\n}\n.stat-icon.red {\n  background: rgba(231, 76, 60, 0.15);\n  color: #e74c3c;\n}\n\n.stat-text .overview-value {\n  font-size: 1.5rem;\n}\n\n.stat-text .overview-value.green {\n  color: #1db954;\n}\n.stat-text .overview-value.orange {\n  color: #f39c12;\n}\n.stat-text .overview-value.purple {\n  color: #9b59b6;\n}\n.stat-text .overview-value.red {\n  color: #e74c3c;\n}\n\n/* ===== Top Lists Section ===== */\n.top-lists-section {\n  display: flex;\n  flex-wrap: wrap;\n  gap: 24px;\n  margin-bottom: 32px;\n}\n\n.top-list {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  min-height: 400px;\n  display: flex;\n  flex-direction: column;\n  flex: 1 1 300px;\n  min-width: 280px;\n}\n\n.top-list-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  margin-bottom: 20px;\n}\n\n.top-list-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n  display: flex;\n  align-items: center;\n  gap: 8px;\n}\n\n.top-list-title svg {\n  width: 20px;\n  height: 20px;\n  color: var(--text-subdued);\n}\n\n/* ===== Item List ===== */\n.item-list {\n  display: flex;\n  flex-direction: column;\n  gap: 4px;\n  flex: 1;\n}\n\n.item-row {\n  display: flex;\n  align-items: center;\n  gap: 12px;\n  padding: 10px 12px;\n  margin: 0 -12px;\n  border-radius: 8px;\n  cursor: pointer;\n  transition: background 0.15s ease;\n}\n\n.item-row:hover {\n  background: rgba(255, 255, 255, 0.07);\n}\n\n.item-rank {\n  width: 24px;\n  font-size: 14px;\n  font-weight: 700;\n  text-align: center;\n  flex-shrink: 0;\n  color: var(--text-subdued);\n}\n\n.item-rank.gold {\n  color: #f1c40f;\n  text-shadow: 0 0 10px rgba(241, 196, 15, 0.3);\n}\n.item-rank.silver {\n  color: #bdc3c7;\n}\n.item-rank.bronze {\n  color: #cd6133;\n}\n\n.item-art {\n  width: 48px;\n  height: 48px;\n  border-radius: 6px;\n  object-fit: cover;\n  background: var(--background-elevated-base);\n  flex-shrink: 0;\n}\n\n.item-art.round {\n  border-radius: 50%;\n}\n\n.item-info {\n  flex: 1;\n  min-width: 0;\n}\n\n.item-name {\n  font-size: 14px;\n  font-weight: 500;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  margin-bottom: 2px;\n}\n\n.item-meta {\n  font-size: 12px;\n  color: var(--text-subdued);\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n.item-stats {\n  display: flex;\n  flex-direction: column;\n  align-items: flex-end;\n  gap: 2px;\n  flex-shrink: 0;\n}\n\n.item-plays {\n  font-size: 13px;\n  font-weight: 600;\n  color: var(--text-base);\n}\n\n.item-time {\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n/* Heart button */\n.heart-btn {\n  background: none;\n  border: none;\n  padding: 6px;\n  cursor: pointer;\n  color: var(--text-subdued);\n  display: flex;\n  align-items: center;\n  border-radius: 50%;\n  transition: all 0.15s ease;\n  flex-shrink: 0;\n}\n\n.heart-btn:hover {\n  color: var(--text-base);\n  background: rgba(255, 255, 255, 0.1);\n}\n\n.heart-btn.liked {\n  color: #1db954;\n}\n\n.heart-btn svg {\n  width: 18px;\n  height: 18px;\n}\n\n/* ===== Activity Chart Section ===== */\n.activity-section {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  margin-bottom: 32px;\n}\n\n.activity-header {\n  display: flex;\n  align-items: center;\n  justify-content: space-between;\n  margin-bottom: 20px;\n}\n\n.activity-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n}\n\n.activity-peak {\n  font-size: 13px;\n  color: var(--text-subdued);\n}\n\n.activity-peak strong {\n  color: #1db954;\n}\n\n.activity-chart {\n  height: 80px;\n  display: flex;\n  align-items: flex-end;\n  gap: 3px;\n}\n\n.activity-bar {\n  flex: 1;\n  background: rgba(255, 255, 255, 0.08);\n  border-radius: 3px 3px 0 0;\n  min-height: 4px;\n  transition: background 0.15s ease;\n  cursor: pointer;\n  position: relative;\n}\n\n.activity-bar.peak {\n  background: #1db954;\n}\n\n.activity-bar:hover {\n  background: #1db954;\n}\n\n.activity-bar-tooltip {\n  position: absolute;\n  bottom: calc(100% + 8px);\n  left: 50%;\n  transform: translateX(-50%);\n  background: var(--background-elevated-base);\n  padding: 6px 10px;\n  border-radius: 6px;\n  font-size: 11px;\n  white-space: nowrap;\n  opacity: 0;\n  pointer-events: none;\n  transition: opacity 0.15s ease;\n  z-index: 10;\n  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);\n}\n\n.activity-bar:hover .activity-bar-tooltip {\n  opacity: 1;\n}\n\n.chart-labels {\n  display: flex;\n  justify-content: space-between;\n  font-size: 10px;\n  color: var(--text-subdued);\n  margin-top: 10px;\n  padding: 0 2px;\n}\n\n/* ===== Recently Played ===== */\n.recent-section {\n  background: var(--background-tinted-base);\n  border-radius: 16px;\n  padding: 24px;\n  margin-bottom: 32px;\n}\n\n.recent-header {\n  margin-bottom: 20px;\n}\n\n.recent-title {\n  font-size: 18px;\n  font-weight: 700;\n  margin: 0;\n}\n\n.recent-scroll {\n  display: flex;\n  gap: 16px;\n  overflow-x: auto;\n  padding-bottom: 8px;\n  margin: 0 -24px;\n  padding: 0 24px;\n  scrollbar-width: thin;\n  scrollbar-color: var(--background-tinted-highlight) transparent;\n}\n\n.recent-scroll::-webkit-scrollbar {\n  height: 6px;\n}\n\n.recent-scroll::-webkit-scrollbar-track {\n  background: transparent;\n}\n\n.recent-scroll::-webkit-scrollbar-thumb {\n  background: var(--background-tinted-highlight);\n  border-radius: 3px;\n}\n\n.recent-card {\n  flex-shrink: 0;\n  width: 140px;\n  cursor: pointer;\n  transition: transform 0.15s ease;\n}\n\n.recent-card:hover {\n  transform: translateY(-4px);\n}\n\n.recent-card:hover .recent-art {\n  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);\n}\n\n.recent-art {\n  width: 140px;\n  height: 140px;\n  border-radius: 8px;\n  object-fit: cover;\n  background: var(--background-elevated-base);\n  margin-bottom: 10px;\n  transition: box-shadow 0.15s ease;\n}\n\n.recent-name {\n  font-size: 13px;\n  font-weight: 500;\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n  margin-bottom: 2px;\n}\n\n.recent-meta {\n  font-size: 12px;\n  color: var(--text-subdued);\n  white-space: nowrap;\n  overflow: hidden;\n  text-overflow: ellipsis;\n}\n\n/* ===== Footer ===== */\n.stats-footer {\n  padding-top: 20px;\n  border-top: 1px solid var(--background-tinted-highlight);\n  display: flex;\n  justify-content: space-between;\n  align-items: center;\n  flex-wrap: wrap;\n  gap: 12px;\n}\n\n.footer-left {\n  display: flex;\n  align-items: center;\n  gap: 10px;\n}\n\n.settings-toggle {\n  background: none;\n  border: none;\n  color: var(--text-subdued);\n  font-size: 12px;\n  cursor: pointer;\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  padding: 8px 12px;\n  border-radius: 6px;\n  transition: all 0.15s ease;\n}\n\n.settings-toggle:hover {\n  background: var(--background-tinted-base);\n  color: var(--text-base);\n}\n\n.settings-toggle svg {\n  width: 14px;\n  height: 14px;\n}\n\n.footer-btn {\n  padding: 8px 14px;\n  background: var(--background-tinted-base);\n  border: none;\n  border-radius: 6px;\n  color: var(--text-subdued);\n  font-size: 12px;\n  font-weight: 500;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.footer-btn:hover {\n  background: var(--background-tinted-highlight);\n  color: var(--text-base);\n}\n\n.footer-btn.primary {\n  background: #1db954;\n  color: #000;\n}\n\n.footer-btn.primary:hover {\n  background: #1ed760;\n}\n\n.footer-btn.danger:hover {\n  background: #e74c3c;\n  color: #fff;\n}\n\n.version-text {\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n/* ===== Settings Panel ===== */\n.settings-panel {\n  margin-top: 16px;\n  padding: 20px;\n  background: var(--background-tinted-base);\n  border-radius: 12px;\n}\n\n.settings-row {\n  display: flex;\n  gap: 10px;\n  flex-wrap: wrap;\n}\n\n.api-status {\n  display: flex;\n  align-items: center;\n  gap: 6px;\n  margin-top: 14px;\n  font-size: 11px;\n  color: var(--text-subdued);\n}\n\n.status-dot {\n  width: 8px;\n  height: 8px;\n  border-radius: 50%;\n}\n\n.status-dot.green {\n  background: #1db954;\n}\n.status-dot.red {\n  background: #e74c3c;\n}\n\n/* ===== Empty State ===== */\n.empty-state {\n  text-align: center;\n  padding: 100px 20px;\n}\n\n.empty-icon {\n  width: 80px;\n  height: 80px;\n  margin: 0 auto 20px;\n  color: var(--text-subdued);\n  opacity: 0.5;\n}\n\n.empty-icon svg {\n  width: 100%;\n  height: 100%;\n}\n\n.empty-title {\n  font-size: 24px;\n  font-weight: 600;\n  margin-bottom: 10px;\n}\n\n.empty-text {\n  color: var(--text-subdued);\n  font-size: 15px;\n}\n\n/* ===== Loading ===== */\n.loading {\n  display: flex;\n  align-items: center;\n  justify-content: center;\n  min-height: 400px;\n  color: var(--text-subdued);\n  font-size: 15px;\n}\n\n/* ===== Update Banner ===== */\n.update-banner-container {\n  display: flex;\n  justify-content: center;\n  align-items: center;\n  min-height: 70vh;\n}\n\n.update-banner {\n  background: var(--background-elevated-base, #282828);\n  padding: 32px;\n  border-radius: 16px;\n  width: 90%;\n  max-width: 480px;\n  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);\n  color: var(--text-base, #fff);\n}\n\n.update-banner-header {\n  text-align: center;\n  margin-bottom: 20px;\n}\n\n.update-banner-icon {\n  font-size: 56px;\n  margin-bottom: 12px;\n}\n\n.update-banner-title {\n  font-size: 28px;\n  font-weight: 700;\n  margin-bottom: 6px;\n  letter-spacing: -0.5px;\n}\n\n.update-banner-version {\n  font-size: 15px;\n  color: var(--text-subdued, #a7a7a7);\n  font-weight: 500;\n}\n\n.update-banner-changelog {\n  background: var(--background-tinted-base, #1a1a1a);\n  border-radius: 12px;\n  padding: 16px;\n  font-size: 13px;\n  max-height: 200px;\n  overflow-y: auto;\n  margin-bottom: 24px;\n  white-space: pre-wrap;\n  line-height: 1.6;\n  color: var(--text-subdued, #b3b3b3);\n  border: 1px solid rgba(255, 255, 255, 0.1);\n}\n\n.update-banner-changelog::-webkit-scrollbar {\n  width: 6px;\n}\n\n.update-banner-changelog::-webkit-scrollbar-track {\n  background: transparent;\n}\n\n.update-banner-changelog::-webkit-scrollbar-thumb {\n  background: rgba(255, 255, 255, 0.2);\n  border-radius: 3px;\n}\n\n.update-banner-actions {\n  display: flex;\n  gap: 12px;\n  margin-bottom: 0;\n}\n\n.update-banner-btn {\n  flex: 1;\n  padding: 14px 24px;\n  border-radius: 500px;\n  border: none;\n  font-size: 14px;\n  font-weight: 700;\n  cursor: pointer;\n  transition: all 0.15s ease;\n}\n\n.update-banner-btn.primary {\n  background: #1db954;\n  color: #000;\n}\n\n.update-banner-btn.primary:hover {\n  background: #1ed760;\n  transform: scale(1.02);\n}\n\n.update-banner-btn.primary.copied {\n  background: #1db954;\n}\n\n.update-banner-btn.secondary {\n  background: transparent;\n  color: var(--text-base, #fff);\n  border: 1px solid rgba(255, 255, 255, 0.3);\n}\n\n.update-banner-btn.secondary:hover {\n  background: rgba(255, 255, 255, 0.1);\n  border-color: rgba(255, 255, 255, 0.5);\n}\n\n.updating-text {\n  margin-top: 16px;\n  padding: 12px 16px;\n  font-size: 13px;\n  color: var(--text-base);\n  text-align: center;\n  font-weight: 500;\n}\n\n/* Disabled button state */\n.footer-btn:disabled {\n  opacity: 0.5;\n  cursor: not-allowed;\n}\n\n/* ===== Responsive ===== */\n@media (max-width: 1200px) {\n  .overview-row {\n    grid-template-columns: 1fr 1fr;\n  }\n\n  .overview-card-list {\n    grid-column: span 1;\n  }\n}\n\n@media (max-width: 1000px) {\n  .overview-row {\n    grid-template-columns: 1fr;\n  }\n\n  .overview-card-list {\n    grid-column: span 1;\n  }\n}\n\n@media (max-width: 700px) {\n  .stats-page {\n    padding: 24px;\n  }\n\n  .top-list {\n    min-height: auto;\n    flex: 1 1 100%;\n  }\n\n  .overview-row {\n    grid-template-columns: 1fr;\n  }\n\n  .overview-card-list {\n    grid-column: span 1;\n  }\n\n  .overview-card.hero .overview-value {\n    font-size: 2.5rem;\n  }\n\n  .overview-secondary {\n    flex-wrap: wrap;\n  }\n\n  .period-tabs {\n    flex-wrap: wrap;\n  }\n\n  .period-tab {\n    padding: 6px 12px;\n    font-size: 12px;\n  }\n\n  .recent-card {\n    width: 120px;\n  }\n\n  .recent-art {\n    width: 120px;\n    height: 120px;\n  }\n}\n';
@@ -1086,21 +998,303 @@ var ListeningStatsApp = (() => {
     return "";
   }
 
+  // src/app/components/UpdateBanner.tsx
+  function UpdateBanner({
+    updateInfo,
+    commandCopied,
+    onDismiss,
+    onCopyCommand
+  }) {
+    return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-page" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-container" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-header" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-icon" }, "\u{1F389}"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-title" }, "Update Available!"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-version" }, "v", updateInfo.currentVersion, " \u2192 v", updateInfo.latestVersion)), updateInfo.changelog && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-changelog" }, updateInfo.changelog), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-actions" }, /* @__PURE__ */ Spicetify.React.createElement("button", { className: "update-banner-btn secondary", onClick: onDismiss }, "I'll do this later"), /* @__PURE__ */ Spicetify.React.createElement(
+      "button",
+      {
+        className: `update-banner-btn primary ${commandCopied ? "copied" : ""}`,
+        onClick: onCopyCommand
+      },
+      commandCopied ? "\u2713 Copied!" : "\u{1F4CB} Copy Command"
+    )), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "updating-text" }, "Paste the command in your terminal, then restart Spotify."))));
+  }
+
+  // src/app/icons.ts
+  var Icons = {
+    heart: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M1.69 2A4.582 4.582 0 018 2.023 4.583 4.583 0 0114.31 2a4.583 4.583 0 010 6.496L8 14.153l-6.31-5.657A4.583 4.583 0 011.69 2m6.31 10.06l5.715-5.12a3.087 3.087 0 00-4.366-4.371L8 3.839l-1.35-1.27a3.087 3.087 0 00-4.366 4.37z"/></svg>',
+    heartFilled: '<svg viewBox="0 0 16 16"><path fill="currentColor" d="M15.724 4.22A4.313 4.313 0 0012.192.814a4.269 4.269 0 00-3.622 1.13.837.837 0 01-1.14 0 4.272 4.272 0 00-6.21 5.855l5.916 7.05a1.128 1.128 0 001.727 0l5.916-7.05a4.228 4.228 0 00.945-3.577z"/></svg>',
+    money: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>',
+    fire: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 23c-3.866 0-7-3.358-7-7.5 0-2.09.705-3.905 1.949-5.267A7.834 7.834 0 009 8.5c0-2.485 1.136-4.5 3-6 0 3 2.5 5.5 5 7 .667-1 1-2 1-3 2 2.5 3 5.5 3 8.5 0 4.142-3.134 7.5-7 7.5h-2z"/></svg>',
+    users: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg>',
+    skip: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>',
+    headphones: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 1a9 9 0 00-9 9v7c0 1.66 1.34 3 3 3h3v-8H5v-2c0-3.87 3.13-7 7-7s7 3.13 7 7v2h-4v8h3c1.66 0 3-1.34 3-3v-7a9 9 0 00-9-9z"/></svg>',
+    settings: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>',
+    chevronDown: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7.41 8.59L12 13.17l4.59-4.58L18 10l-6 6-6-6 1.41-1.41z"/></svg>',
+    music: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>',
+    album: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 14.5c-2.49 0-4.5-2.01-4.5-4.5S9.51 7.5 12 7.5s4.5 2.01 4.5 4.5-2.01 4.5-4.5 4.5zm0-5.5c-.55 0-1 .45-1 1s.45 1 1 1 1-.45 1-1-.45-1-1-1z"/></svg>'
+  };
+
+  // src/app/components/Footer.tsx
+  function Footer({
+    version,
+    showSettings,
+    updateInfo,
+    onToggleSettings,
+    onShowUpdate
+  }) {
+    return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-footer" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "footer-left" }, /* @__PURE__ */ Spicetify.React.createElement("button", { className: "settings-toggle", onClick: onToggleSettings }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.settings } }), "Settings"), updateInfo?.available && /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn primary", onClick: onShowUpdate }, "Update v", updateInfo.latestVersion)), /* @__PURE__ */ Spicetify.React.createElement("span", { className: "version-text" }, "v", version, " - \u2764\uFE0F made with love by", " ", /* @__PURE__ */ Spicetify.React.createElement("a", { href: "https://github.com/Xndr2/listening-stats" }, "Xndr")));
+  }
+
+  // src/services/tracker.ts
+  var enrichmentInProgress = false;
+  var enrichmentCycle = "audioFeatures";
+  async function runBackgroundEnrichment(force = false) {
+    if (enrichmentInProgress) return;
+    if (!isApiAvailable()) {
+      console.log("[ListeningStats] Skipping enrichment - API rate limited");
+      return;
+    }
+    if (!force && !Spicetify.Player.isPlaying()) {
+      console.log("[ListeningStats] Skipping enrichment - not playing");
+      return;
+    }
+    enrichmentInProgress = true;
+    try {
+      const events = await getEventsNeedingEnrichment(20);
+      if (events.length === 0) {
+        return;
+      }
+      console.log(`[ListeningStats] Enriching ${events.length} events (${enrichmentCycle} cycle)...`);
+      let updatedCount = 0;
+      if (enrichmentCycle === "audioFeatures") {
+        const trackUris = [...new Set(
+          events.filter((e) => !e.audioFeatures && e.trackUri.startsWith("spotify:track:")).map((e) => e.trackUri)
+        )];
+        if (trackUris.length > 0) {
+          try {
+            const audioFeaturesMap = await fetchAudioFeaturesBatch(trackUris);
+            console.log(`[ListeningStats] Fetched audio features for ${audioFeaturesMap.size}/${trackUris.length} tracks`);
+            for (const event of events) {
+              if (!event.id || event.audioFeatures) continue;
+              if (audioFeaturesMap.has(event.trackUri)) {
+                await updatePlayEvent(event.id, { audioFeatures: audioFeaturesMap.get(event.trackUri) });
+                updatedCount++;
+              }
+            }
+          } catch (error) {
+            console.warn("[ListeningStats] Audio features batch failed:", error);
+          }
+        }
+        enrichmentCycle = "genres";
+      } else {
+        const artistUris = [...new Set(
+          events.filter((e) => !e.genres && e.artistUri).map((e) => e.artistUri)
+        )];
+        if (artistUris.length > 0) {
+          try {
+            const genresMap = await fetchArtistGenresBatch(artistUris);
+            console.log(`[ListeningStats] Fetched genres for ${genresMap.size}/${artistUris.length} artists`);
+            for (const event of events) {
+              if (!event.id || event.genres) continue;
+              if (genresMap.has(event.artistUri)) {
+                await updatePlayEvent(event.id, { genres: genresMap.get(event.artistUri) });
+                updatedCount++;
+              }
+            }
+          } catch (error) {
+            console.warn("[ListeningStats] Artist genres batch failed:", error);
+          }
+        }
+        enrichmentCycle = "audioFeatures";
+      }
+      if (updatedCount > 0) {
+        console.log(`[ListeningStats] Enrichment complete: updated ${updatedCount} events`);
+      }
+    } catch (error) {
+      console.error("[ListeningStats] Background enrichment failed:", error);
+    } finally {
+      enrichmentInProgress = false;
+    }
+  }
+  var ENRICHMENT_INTERVAL_MS = 15 * 60 * 1e3;
+
+  // src/app/components/SettingsPanel.tsx
+  function SettingsPanel({
+    apiAvailable,
+    onRefresh,
+    onCheckUpdates,
+    onDataCleared
+  }) {
+    return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-panel" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-row" }, /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn", onClick: onRefresh }, "Refresh"), /* @__PURE__ */ Spicetify.React.createElement(
+      "button",
+      {
+        className: "footer-btn",
+        onClick: async () => {
+          await runBackgroundEnrichment(true);
+          onRefresh();
+          Spicetify.showNotification("Data enriched");
+        }
+      },
+      "Enrich Data"
+    ), /* @__PURE__ */ Spicetify.React.createElement(
+      "button",
+      {
+        className: "footer-btn",
+        onClick: () => {
+          resetRateLimit();
+          clearApiCaches();
+          Spicetify.showNotification("Cache cleared");
+        }
+      },
+      "Clear Cache"
+    ), /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn", onClick: onCheckUpdates }, "Check Updates"), /* @__PURE__ */ Spicetify.React.createElement(
+      "button",
+      {
+        className: "footer-btn danger",
+        onClick: async () => {
+          if (confirm("Delete all listening data?")) {
+            await clearAllData();
+            onDataCleared();
+          }
+        }
+      },
+      "Reset Data"
+    )), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "api-status" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: `status-dot ${apiAvailable ? "green" : "red"}` }), "API:", " ", apiAvailable ? "Available" : `Limited (${Math.ceil(getRateLimitRemaining() / 60)}m)`));
+  }
+
+  // src/app/components/PeriodTabs.tsx
+  var PERIOD_LABELS = {
+    today: "Today",
+    week: "This Week",
+    month: "This Month",
+    allTime: "All Time"
+  };
+  function PeriodTabs({ period, onPeriodChange }) {
+    return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "period-tabs" }, ["today", "week", "month", "allTime"].map((p) => /* @__PURE__ */ Spicetify.React.createElement(
+      "button",
+      {
+        key: p,
+        className: `period-tab ${period === p ? "active" : ""}`,
+        onClick: () => onPeriodChange(p)
+      },
+      PERIOD_LABELS[p]
+    )));
+  }
+
+  // src/app/components/OverviewCards.tsx
+  function OverviewCards({ stats, period, onPeriodChange }) {
+    const payout = estimateArtistPayout(stats.trackCount);
+    return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card hero" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value" }, formatDurationLong(stats.totalTimeMs)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Time Listened"), /* @__PURE__ */ Spicetify.React.createElement(PeriodTabs, { period, onPeriodChange }), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-secondary" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.trackCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Tracks")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.uniqueArtistCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Artists")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.uniqueTrackCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Unique")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value green" }, "$", payout), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Spotify paid artists"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label-tooltip" }, "From you listening to their music!")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value orange" }, stats.streakDays), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Day Streak"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label-tooltip" }, "Resets at midnight local time.")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, stats.newArtistsCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "New Artists"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label-tooltip" }, "You're cool if this is high!")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value red" }, Math.floor(stats.skipRate * 100), "%"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Skip Rate"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label-tooltip" }, "Get this as low as possible!"))))));
+  }
+
+  // src/app/components/TopLists.tsx
+  var TOP_ITEMS_COUNT = 6;
+  function TopLists({
+    stats,
+    likedTracks,
+    artistImages,
+    onLikeToggle
+  }) {
+    return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-lists-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.music } }), "Top Tracks")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topTracks.slice(0, TOP_ITEMS_COUNT).map((t, i) => /* @__PURE__ */ Spicetify.React.createElement(
+      "div",
+      {
+        key: t.trackUri,
+        className: "item-row",
+        onClick: () => navigateToUri(t.trackUri)
+      },
+      /* @__PURE__ */ Spicetify.React.createElement("span", { className: `item-rank ${getRankClass(i)}` }, i + 1),
+      t.albumArt && /* @__PURE__ */ Spicetify.React.createElement("img", { src: t.albumArt, className: "item-art", alt: "" }),
+      /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-info" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-name" }, t.trackName), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-meta" }, t.artistName)),
+      /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-stats" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-plays" }, t.playCount, " plays"), /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-time" }, formatDuration(t.totalTimeMs))),
+      /* @__PURE__ */ Spicetify.React.createElement(
+        "button",
+        {
+          className: `heart-btn ${likedTracks.get(t.trackUri) ? "liked" : ""}`,
+          onClick: (e) => onLikeToggle(t.trackUri, e),
+          dangerouslySetInnerHTML: {
+            __html: likedTracks.get(t.trackUri) ? Icons.heartFilled : Icons.heart
+          }
+        }
+      )
+    )))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.users } }), "Top Artists")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topArtists.slice(0, TOP_ITEMS_COUNT).map((a, i) => {
+      const img = artistImages.get(a.artistUri) || a.artistImage;
+      return /* @__PURE__ */ Spicetify.React.createElement(
+        "div",
+        {
+          key: a.artistUri || a.artistName,
+          className: "item-row",
+          onClick: () => a.artistUri && navigateToUri(a.artistUri)
+        },
+        /* @__PURE__ */ Spicetify.React.createElement("span", { className: `item-rank ${getRankClass(i)}` }, i + 1),
+        img && /* @__PURE__ */ Spicetify.React.createElement("img", { src: img, className: "item-art round", alt: "" }),
+        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-info" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-name" }, a.artistName), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-meta" }, a.playCount, " plays")),
+        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-stats" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-time" }, formatDuration(a.totalTimeMs)))
+      );
+    }))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.album } }), "Top Albums")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topAlbums.slice(0, TOP_ITEMS_COUNT).map((a, i) => /* @__PURE__ */ Spicetify.React.createElement(
+      "div",
+      {
+        key: a.albumUri,
+        className: "item-row",
+        onClick: () => navigateToUri(a.albumUri)
+      },
+      /* @__PURE__ */ Spicetify.React.createElement("span", { className: `item-rank ${getRankClass(i)}` }, i + 1),
+      a.albumArt && /* @__PURE__ */ Spicetify.React.createElement("img", { src: a.albumArt, className: "item-art", alt: "" }),
+      /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-info" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-name" }, a.albumName), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-meta" }, a.artistName)),
+      /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-stats" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-plays" }, a.playCount, " plays"), /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-time" }, formatDuration(a.totalTimeMs)))
+    )))));
+  }
+
+  // src/app/components/ActivityChart.tsx
+  function ActivityChart({ hourlyDistribution, peakHour }) {
+    if (!hourlyDistribution.some((h) => h > 0)) {
+      return null;
+    }
+    const max = Math.max(...hourlyDistribution, 1);
+    return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "activity-title" }, "Activity by Hour"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-peak" }, "Peak: ", /* @__PURE__ */ Spicetify.React.createElement("strong", null, formatHour(peakHour)))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-chart" }, hourlyDistribution.map((val, hr) => {
+      const h = val > 0 ? Math.max(val / max * 100, 5) : 0;
+      return /* @__PURE__ */ Spicetify.React.createElement(
+        "div",
+        {
+          key: hr,
+          className: `activity-bar ${hr === peakHour && val > 0 ? "peak" : ""}`,
+          style: { height: `${h}%` }
+        },
+        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-bar-tooltip" }, formatHour(hr), ": ", formatMinutes(val))
+      );
+    })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "chart-labels" }, /* @__PURE__ */ Spicetify.React.createElement("span", null, "12am"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "6am"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "12pm"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "6pm"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "12am")));
+  }
+
+  // src/app/components/RecentlyPlayed.tsx
+  function RecentlyPlayed({ recentTracks }) {
+    if (recentTracks.length === 0) {
+      return null;
+    }
+    return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "recent-title" }, "Recently Played")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-scroll" }, recentTracks.slice(0, 12).map((t) => /* @__PURE__ */ Spicetify.React.createElement(
+      "div",
+      {
+        key: `${t.trackUri}-${t.startedAt}`,
+        className: "recent-card",
+        onClick: () => navigateToUri(t.trackUri)
+      },
+      t.albumArt ? /* @__PURE__ */ Spicetify.React.createElement("img", { src: t.albumArt, className: "recent-art", alt: "" }) : /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-art" }),
+      /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-name" }, t.trackName),
+      /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-meta" }, t.artistName)
+    ))));
+  }
+
+  // src/app/components/EmptyState.tsx
+  function EmptyState({ stats, period, onPeriodChange }) {
+    return /* @__PURE__ */ Spicetify.React.createElement(Spicetify.React.Fragment, null, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-header" }, /* @__PURE__ */ Spicetify.React.createElement("h1", { className: "stats-title" }, "Listening Stats"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "stats-subtitle" }, "Your personal music analytics")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card hero" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value" }, formatDurationLong(stats.totalTimeMs)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "No data for ", getPeriodDisplayName(period)), /* @__PURE__ */ Spicetify.React.createElement(PeriodTabs, { period, onPeriodChange }), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-secondary" }, "Start listening to see your stats!"))));
+  }
+
   // src/app/index.tsx
   var VERSION = getCurrentVersion();
-  var TOP_ITEMS_COUNT = 6;
   var StatsPage = class extends Spicetify.React.Component {
     constructor(props) {
       super(props);
       this.pollInterval = null;
-      // Check for updates when the stats page loads
       this.checkForUpdateOnLoad = async () => {
         const info = await checkForUpdates();
         if (info.available) {
           this.setState({ updateInfo: info, showUpdateBanner: true });
         }
       };
-      // Manual check for updates (from settings button)
       this.checkUpdatesManual = async () => {
         const info = await checkForUpdates();
         this.setState({ updateInfo: info, commandCopied: false });
@@ -1110,21 +1304,16 @@ var ListeningStatsApp = (() => {
           Spicetify.showNotification("You are on the latest version!");
         }
       };
-      // Copy update command to clipboard
       this.copyUpdateCommand = async () => {
         const copied = await copyInstallCommand();
         if (copied) {
           this.setState({ commandCopied: true });
           Spicetify.showNotification("Command copied! Paste in your terminal.");
         } else {
-          Spicetify.showNotification(
-            "Failed to copy. Check console for command.",
-            true
-          );
+          Spicetify.showNotification("Failed to copy. Check console for command.", true);
           console.log("[ListeningStats] Install command:", getInstallCommand());
         }
       };
-      // Dismiss the update banner for this session
       this.dismissUpdateBanner = () => {
         this.setState({ showUpdateBanner: false });
       };
@@ -1155,6 +1344,9 @@ var ListeningStatsApp = (() => {
         const m = new Map(this.state.likedTracks);
         m.set(uri, newVal);
         this.setState({ likedTracks: m });
+      };
+      this.handlePeriodChange = (period) => {
+        this.setState({ period });
       };
       this.state = {
         period: "today",
@@ -1205,243 +1397,86 @@ var ListeningStatsApp = (() => {
         showSettings,
         apiAvailable
       } = this.state;
-      const React = Spicetify.React;
       if (showUpdateBanner && updateInfo) {
-        return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-page" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-container" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-header" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-icon" }, "\u{1F389}"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-title" }, "Update Available!"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-version" }, "v", updateInfo.currentVersion, " \u2192 v", updateInfo.latestVersion)), updateInfo.changelog && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-changelog" }, updateInfo.changelog), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-actions" }, /* @__PURE__ */ Spicetify.React.createElement(
-          "button",
+        return /* @__PURE__ */ Spicetify.React.createElement(
+          UpdateBanner,
           {
-            className: "update-banner-btn secondary",
-            onClick: this.dismissUpdateBanner
-          },
-          "I'll do this later"
-        ), /* @__PURE__ */ Spicetify.React.createElement(
-          "button",
-          {
-            className: `update-banner-btn primary ${commandCopied ? "copied" : ""}`,
-            onClick: this.copyUpdateCommand
-          },
-          commandCopied ? "\u2713 Copied!" : "\u{1F4CB} Copy Command"
-        )), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "updating-text" }, "Paste the command in your terminal, then restart Spotify."))));
+            updateInfo,
+            commandCopied,
+            onDismiss: this.dismissUpdateBanner,
+            onCopyCommand: this.copyUpdateCommand
+          }
+        );
       }
       if (loading) {
         return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-page" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "loading" }, "Loading..."));
       }
-      const periodTabs = /* @__PURE__ */ Spicetify.React.createElement("div", { className: "period-tabs" }, ["today", "week", "month", "allTime"].map((p) => /* @__PURE__ */ Spicetify.React.createElement(
-        "button",
-        {
-          key: p,
-          className: `period-tab ${period === p ? "active" : ""}`,
-          onClick: () => this.setState({ period: p })
-        },
-        p === "today" ? "Today" : p === "week" ? "This Week" : p === "month" ? "This Month" : "All Time"
-      )));
       if (!stats || stats.trackCount === 0) {
-        return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-page" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-header" }, /* @__PURE__ */ Spicetify.React.createElement("h1", { className: "stats-title" }, "Listening Stats"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "stats-subtitle" }, "Your personal music analytics")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card hero" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value" }, formatDurationLong(stats.totalTimeMs)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "No data for ", getPeriodDisplayName(period)), periodTabs, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-secondary" }, "Start listening to see your stats!"))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-footer" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "footer-left" }, /* @__PURE__ */ Spicetify.React.createElement(
-          "button",
+        return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-page" }, /* @__PURE__ */ Spicetify.React.createElement(
+          EmptyState,
           {
-            className: "settings-toggle",
-            onClick: () => this.setState({ showSettings: !showSettings })
-          },
-          /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.settings } }),
-          "Settings"
-        ), updateInfo?.available && /* @__PURE__ */ Spicetify.React.createElement(
-          "button",
-          {
-            className: "footer-btn primary",
-            onClick: () => this.setState({ showUpdateBanner: true })
-          },
-          "Update v",
-          updateInfo.latestVersion
-        )), /* @__PURE__ */ Spicetify.React.createElement("span", { className: "version-text" }, "v", VERSION, " - \u2764\uFE0F made with love by", " ", /* @__PURE__ */ Spicetify.React.createElement("a", { href: "https://github.com/Xndr2/listening-stats" }, "Xndr"))), showSettings && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-panel" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-row" }, /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn", onClick: () => this.loadStats() }, "Refresh"), /* @__PURE__ */ Spicetify.React.createElement(
-          "button",
-          {
-            className: "footer-btn",
-            onClick: async () => {
-              await runBackgroundEnrichment(true);
-              this.loadStats();
-              Spicetify.showNotification("Data enriched");
-            }
-          },
-          "Enrich Data"
-        ), /* @__PURE__ */ Spicetify.React.createElement(
-          "button",
-          {
-            className: "footer-btn",
-            onClick: () => {
-              resetRateLimit();
-              clearApiCaches();
-              Spicetify.showNotification("Cache cleared");
-            }
-          },
-          "Clear Cache"
-        ), /* @__PURE__ */ Spicetify.React.createElement(
-          "button",
-          {
-            className: "footer-btn",
-            onClick: this.checkUpdatesManual
-          },
-          "Check Updates"
-        ), /* @__PURE__ */ Spicetify.React.createElement(
-          "button",
-          {
-            className: "footer-btn danger",
-            onClick: async () => {
-              if (confirm("Delete all listening data?")) {
-                await clearAllData();
-                this.setState({ stats: null });
-              }
-            }
-          },
-          "Reset Data"
-        )), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "api-status" }, /* @__PURE__ */ Spicetify.React.createElement(
-          "span",
-          {
-            className: `status-dot ${apiAvailable ? "green" : "red"}`
+            stats,
+            period,
+            onPeriodChange: this.handlePeriodChange
           }
-        ), "API:", " ", apiAvailable ? "Available" : `Limited (${Math.ceil(getRateLimitRemaining() / 60)}m)`)));
+        ), /* @__PURE__ */ Spicetify.React.createElement(
+          Footer,
+          {
+            version: VERSION,
+            showSettings,
+            updateInfo,
+            onToggleSettings: () => this.setState({ showSettings: !showSettings }),
+            onShowUpdate: () => this.setState({ showUpdateBanner: true })
+          }
+        ), showSettings && /* @__PURE__ */ Spicetify.React.createElement(
+          SettingsPanel,
+          {
+            apiAvailable,
+            onRefresh: this.loadStats,
+            onCheckUpdates: this.checkUpdatesManual,
+            onDataCleared: () => this.setState({ stats: null })
+          }
+        ));
       }
-      const payout = estimateArtistPayout(stats.trackCount);
-      return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-page" }, showUpdateBanner && updateInfo && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-backdrop" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-header" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-icon" }, "\u{1F389}"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-title" }, "Update Available!"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-version" }, "v", updateInfo.currentVersion, " \u2192 v", updateInfo.latestVersion)), updateInfo.changelog && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-changelog" }, updateInfo.changelog), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-actions" }, /* @__PURE__ */ Spicetify.React.createElement(
-        "button",
+      return /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-page" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-header" }, /* @__PURE__ */ Spicetify.React.createElement("h1", { className: "stats-title" }, "Listening Stats"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "stats-subtitle" }, "Your personal music analytics")), /* @__PURE__ */ Spicetify.React.createElement(
+        OverviewCards,
         {
-          className: "update-banner-btn secondary",
-          onClick: this.dismissUpdateBanner
-        },
-        "I'll do this later"
-      ), /* @__PURE__ */ Spicetify.React.createElement(
-        "button",
-        {
-          className: `update-banner-btn primary ${commandCopied ? "copied" : ""}`,
-          onClick: this.copyUpdateCommand
-        },
-        commandCopied ? "\u2713 Copied!" : "\u{1F4CB} Copy Command"
-      )), commandCopied && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "update-banner-hint" }, "Paste the command in your terminal, then restart Spotify."))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-header" }, /* @__PURE__ */ Spicetify.React.createElement("h1", { className: "stats-title" }, "Listening Stats"), /* @__PURE__ */ Spicetify.React.createElement("p", { className: "stats-subtitle" }, "Your personal music analytics")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-row" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card hero" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value" }, formatDurationLong(stats.totalTimeMs)), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Time Listened"), periodTabs, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-secondary" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.trackCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Tracks")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.uniqueArtistCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Artists")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-value" }, stats.uniqueTrackCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-stat-label" }, "Unique")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value green" }, "$", payout), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Spotify paid artists"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label-tooltip" }, "From you listening to their music!")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value orange" }, stats.streakDays), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Day Streak"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label-tooltip" }, "Resets at midnight local time.")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value purple" }, stats.newArtistsCount), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "New Artists"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label-tooltip" }, "You're cool if this is high!")))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-card" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-colored" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stat-text" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-value red" }, Math.floor(stats.skipRate * 100), "%"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label" }, "Skip Rate"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "overview-label-tooltip" }, "Get this as low as possible!")))))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-lists-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.music } }), "Top Tracks")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topTracks.slice(0, TOP_ITEMS_COUNT).map((t, i) => /* @__PURE__ */ Spicetify.React.createElement(
-        "div",
-        {
-          key: t.trackUri,
-          className: "item-row",
-          onClick: () => navigateToUri(t.trackUri)
-        },
-        /* @__PURE__ */ Spicetify.React.createElement("span", { className: `item-rank ${getRankClass(i)}` }, i + 1),
-        t.albumArt && /* @__PURE__ */ Spicetify.React.createElement("img", { src: t.albumArt, className: "item-art", alt: "" }),
-        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-info" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-name" }, t.trackName), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-meta" }, t.artistName)),
-        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-stats" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-plays" }, t.playCount, " plays"), /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-time" }, formatDuration(t.totalTimeMs))),
-        /* @__PURE__ */ Spicetify.React.createElement(
-          "button",
-          {
-            className: `heart-btn ${likedTracks.get(t.trackUri) ? "liked" : ""}`,
-            onClick: (e) => this.handleLikeToggle(t.trackUri, e),
-            dangerouslySetInnerHTML: {
-              __html: likedTracks.get(t.trackUri) ? Icons.heartFilled : Icons.heart
-            }
-          }
-        )
-      )))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.users } }), "Top Artists")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topArtists.slice(0, TOP_ITEMS_COUNT).map((a, i) => {
-        const img = artistImages.get(a.artistUri) || a.artistImage;
-        return /* @__PURE__ */ Spicetify.React.createElement(
-          "div",
-          {
-            key: a.artistUri || a.artistName,
-            className: "item-row",
-            onClick: () => a.artistUri && navigateToUri(a.artistUri)
-          },
-          /* @__PURE__ */ Spicetify.React.createElement("span", { className: `item-rank ${getRankClass(i)}` }, i + 1),
-          img && /* @__PURE__ */ Spicetify.React.createElement("img", { src: img, className: "item-art round", alt: "" }),
-          /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-info" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-name" }, a.artistName), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-meta" }, a.playCount, " plays")),
-          /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-stats" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-time" }, formatDuration(a.totalTimeMs)))
-        );
-      }))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "top-list-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "top-list-title" }, /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.album } }), "Top Albums")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-list" }, stats.topAlbums.slice(0, TOP_ITEMS_COUNT).map((a, i) => /* @__PURE__ */ Spicetify.React.createElement(
-        "div",
-        {
-          key: a.albumUri,
-          className: "item-row",
-          onClick: () => navigateToUri(a.albumUri)
-        },
-        /* @__PURE__ */ Spicetify.React.createElement("span", { className: `item-rank ${getRankClass(i)}` }, i + 1),
-        a.albumArt && /* @__PURE__ */ Spicetify.React.createElement("img", { src: a.albumArt, className: "item-art", alt: "" }),
-        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-info" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-name" }, a.albumName), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-meta" }, a.artistName)),
-        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "item-stats" }, /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-plays" }, a.playCount, " plays"), /* @__PURE__ */ Spicetify.React.createElement("span", { className: "item-time" }, formatDuration(a.totalTimeMs)))
-      ))))), stats.hourlyDistribution.some((h) => h > 0) && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "activity-title" }, "Activity by Hour"), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-peak" }, "Peak: ", /* @__PURE__ */ Spicetify.React.createElement("strong", null, formatHour(stats.peakHour)))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-chart" }, stats.hourlyDistribution.map((val, hr) => {
-        const max = Math.max(...stats.hourlyDistribution, 1);
-        const h = val > 0 ? Math.max(val / max * 100, 5) : 0;
-        return /* @__PURE__ */ Spicetify.React.createElement(
-          "div",
-          {
-            key: hr,
-            className: `activity-bar ${hr === stats.peakHour && val > 0 ? "peak" : ""}`,
-            style: { height: `${h}%` }
-          },
-          /* @__PURE__ */ Spicetify.React.createElement("div", { className: "activity-bar-tooltip" }, formatHour(hr), ": ", formatMinutes(val))
-        );
-      })), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "chart-labels" }, /* @__PURE__ */ Spicetify.React.createElement("span", null, "12am"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "6am"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "12pm"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "6pm"), /* @__PURE__ */ Spicetify.React.createElement("span", null, "12am"))), stats.recentTracks.length > 0 && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-section" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-header" }, /* @__PURE__ */ Spicetify.React.createElement("h3", { className: "recent-title" }, "Recently Played")), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-scroll" }, stats.recentTracks.slice(0, 12).map((t) => /* @__PURE__ */ Spicetify.React.createElement(
-        "div",
-        {
-          key: `${t.trackUri}-${t.startedAt}`,
-          className: "recent-card",
-          onClick: () => navigateToUri(t.trackUri)
-        },
-        t.albumArt ? /* @__PURE__ */ Spicetify.React.createElement("img", { src: t.albumArt, className: "recent-art", alt: "" }) : /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-art" }),
-        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-name" }, t.trackName),
-        /* @__PURE__ */ Spicetify.React.createElement("div", { className: "recent-meta" }, t.artistName)
-      )))), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "stats-footer" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "footer-left" }, /* @__PURE__ */ Spicetify.React.createElement(
-        "button",
-        {
-          className: "settings-toggle",
-          onClick: () => this.setState({ showSettings: !showSettings })
-        },
-        /* @__PURE__ */ Spicetify.React.createElement("span", { dangerouslySetInnerHTML: { __html: Icons.settings } }),
-        "Settings"
-      ), updateInfo?.available && /* @__PURE__ */ Spicetify.React.createElement(
-        "button",
-        {
-          className: "footer-btn primary",
-          onClick: () => this.setState({
-            showUpdateBanner: true,
-            commandCopied: false
-          })
-        },
-        "Update v",
-        updateInfo.latestVersion
-      )), /* @__PURE__ */ Spicetify.React.createElement("span", { className: "version-text" }, "v", VERSION, " - \u2764\uFE0F made with love by", " ", /* @__PURE__ */ Spicetify.React.createElement("a", { href: "https://github.com/Xndr2/listening-stats" }, "Xndr"))), showSettings && /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-panel" }, /* @__PURE__ */ Spicetify.React.createElement("div", { className: "settings-row" }, /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn", onClick: () => this.loadStats() }, "Refresh"), /* @__PURE__ */ Spicetify.React.createElement(
-        "button",
-        {
-          className: "footer-btn",
-          onClick: async () => {
-            await runBackgroundEnrichment(true);
-            this.loadStats();
-            Spicetify.showNotification("Data enriched");
-          }
-        },
-        "Enrich Data"
-      ), /* @__PURE__ */ Spicetify.React.createElement(
-        "button",
-        {
-          className: "footer-btn",
-          onClick: () => {
-            resetRateLimit();
-            clearApiCaches();
-            Spicetify.showNotification("Cache cleared");
-          }
-        },
-        "Clear Cache"
-      ), /* @__PURE__ */ Spicetify.React.createElement("button", { className: "footer-btn", onClick: this.checkUpdatesManual }, "Check Updates"), /* @__PURE__ */ Spicetify.React.createElement(
-        "button",
-        {
-          className: "footer-btn danger",
-          onClick: async () => {
-            if (confirm("Delete all listening data?")) {
-              await clearAllData();
-              this.setState({ stats: null });
-            }
-          }
-        },
-        "Reset Data"
-      )), /* @__PURE__ */ Spicetify.React.createElement("div", { className: "api-status" }, /* @__PURE__ */ Spicetify.React.createElement(
-        "span",
-        {
-          className: `status-dot ${apiAvailable ? "green" : "red"}`
+          stats,
+          period,
+          onPeriodChange: this.handlePeriodChange
         }
-      ), "API:", " ", apiAvailable ? "Available" : `Limited (${Math.ceil(getRateLimitRemaining() / 60)}m)`)));
+      ), /* @__PURE__ */ Spicetify.React.createElement(
+        TopLists,
+        {
+          stats,
+          likedTracks,
+          artistImages,
+          onLikeToggle: this.handleLikeToggle
+        }
+      ), /* @__PURE__ */ Spicetify.React.createElement(
+        ActivityChart,
+        {
+          hourlyDistribution: stats.hourlyDistribution,
+          peakHour: stats.peakHour
+        }
+      ), /* @__PURE__ */ Spicetify.React.createElement(RecentlyPlayed, { recentTracks: stats.recentTracks }), /* @__PURE__ */ Spicetify.React.createElement(
+        Footer,
+        {
+          version: VERSION,
+          showSettings,
+          updateInfo,
+          onToggleSettings: () => this.setState({ showSettings: !showSettings }),
+          onShowUpdate: () => this.setState({ showUpdateBanner: true, commandCopied: false })
+        }
+      ), showSettings && /* @__PURE__ */ Spicetify.React.createElement(
+        SettingsPanel,
+        {
+          apiAvailable,
+          onRefresh: this.loadStats,
+          onCheckUpdates: this.checkUpdatesManual,
+          onDataCleared: () => this.setState({ stats: null })
+        }
+      ));
     }
   };
   var index_default = StatsPage;

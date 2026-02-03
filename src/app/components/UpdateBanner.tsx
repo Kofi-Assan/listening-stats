@@ -1,0 +1,49 @@
+// Update Banner Component
+import { UpdateInfo } from "../../services/updater";
+
+interface UpdateBannerProps {
+  updateInfo: UpdateInfo;
+  commandCopied: boolean;
+  onDismiss: () => void;
+  onCopyCommand: () => void;
+}
+
+export function UpdateBanner({
+  updateInfo,
+  commandCopied,
+  onDismiss,
+  onCopyCommand,
+}: UpdateBannerProps) {
+  return (
+    <div className="stats-page">
+      <div className="update-banner-container">
+        <div className="update-banner">
+          <div className="update-banner-header">
+            <div className="update-banner-icon">🎉</div>
+            <div className="update-banner-title">Update Available!</div>
+            <div className="update-banner-version">
+              v{updateInfo.currentVersion} → v{updateInfo.latestVersion}
+            </div>
+          </div>
+          {updateInfo.changelog && (
+            <div className="update-banner-changelog">{updateInfo.changelog}</div>
+          )}
+          <div className="update-banner-actions">
+            <button className="update-banner-btn secondary" onClick={onDismiss}>
+              I'll do this later
+            </button>
+            <button
+              className={`update-banner-btn primary ${commandCopied ? "copied" : ""}`}
+              onClick={onCopyCommand}
+            >
+              {commandCopied ? "✓ Copied!" : "📋 Copy Command"}
+            </button>
+          </div>
+          <div className="updating-text">
+            Paste the command in your terminal, then restart Spotify.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
