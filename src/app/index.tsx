@@ -8,19 +8,20 @@ import {
   getInstallCommand,
   UpdateInfo,
 } from "../services/updater";
-import { ListeningStats, TimePeriod } from "../types";
+import { ListeningStats, TimePeriod } from "../types/listeningstats";
+import {
+  ActivityChart,
+  EmptyState,
+  Footer,
+  OverviewCards,
+  RecentlyPlayed,
+  SettingsPanel,
+  TopLists,
+  UpdateBanner,
+} from "./components";
+import { Header } from "./components/Header";
 import { injectStyles } from "./styles";
 import { checkLikedTracks, fetchArtistImages, toggleLike } from "./utils";
-import {
-  UpdateBanner,
-  Footer,
-  SettingsPanel,
-  OverviewCards,
-  TopLists,
-  ActivityChart,
-  RecentlyPlayed,
-  EmptyState,
-} from "./components";
 
 const VERSION = getCurrentVersion();
 
@@ -108,7 +109,10 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
       this.setState({ commandCopied: true });
       Spicetify.showNotification("Command copied! Paste in your terminal.");
     } else {
-      Spicetify.showNotification("Failed to copy. Check console for command.", true);
+      Spicetify.showNotification(
+        "Failed to copy. Check console for command.",
+        true,
+      );
       console.log("[ListeningStats] Install command:", getInstallCommand());
     }
   };
@@ -200,7 +204,9 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
             version={VERSION}
             showSettings={showSettings}
             updateInfo={updateInfo}
-            onToggleSettings={() => this.setState({ showSettings: !showSettings })}
+            onToggleSettings={() =>
+              this.setState({ showSettings: !showSettings })
+            }
             onShowUpdate={() => this.setState({ showUpdateBanner: true })}
           />
           {showSettings && (
@@ -217,11 +223,7 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
 
     return (
       <div className="stats-page">
-        {/* Header */}
-        <div className="stats-header">
-          <h1 className="stats-title">Listening Stats</h1>
-          <p className="stats-subtitle">Your personal music analytics</p>
-        </div>
+        <Header />
 
         <OverviewCards
           stats={stats}
@@ -247,7 +249,9 @@ class StatsPage extends Spicetify.React.Component<{}, State> {
           version={VERSION}
           showSettings={showSettings}
           updateInfo={updateInfo}
-          onToggleSettings={() => this.setState({ showSettings: !showSettings })}
+          onToggleSettings={() =>
+            this.setState({ showSettings: !showSettings })
+          }
           onShowUpdate={() =>
             this.setState({ showUpdateBanner: true, commandCopied: false })
           }

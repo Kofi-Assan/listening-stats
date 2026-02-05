@@ -1,7 +1,11 @@
 // Settings Panel Component
-import { clearApiCaches, getRateLimitRemaining, resetRateLimit } from "../../services/spotify-api";
+import {
+  clearApiCaches,
+  getRateLimitRemaining,
+  resetRateLimit,
+  testAPI,
+} from "../../services/spotify-api";
 import { clearAllData } from "../../services/storage";
-import { runBackgroundEnrichment } from "../../services/tracker";
 
 interface SettingsPanelProps {
   apiAvailable: boolean;
@@ -24,16 +28,6 @@ export function SettingsPanel({
         </button>
         <button
           className="footer-btn"
-          onClick={async () => {
-            await runBackgroundEnrichment(true);
-            onRefresh();
-            Spicetify.showNotification("Data enriched");
-          }}
-        >
-          Enrich Data
-        </button>
-        <button
-          className="footer-btn"
           onClick={() => {
             resetRateLimit();
             clearApiCaches();
@@ -44,6 +38,15 @@ export function SettingsPanel({
         </button>
         <button className="footer-btn" onClick={onCheckUpdates}>
           Check Updates
+        </button>
+        <button
+          className="footer-btn"
+          onClick={() => {
+            // console.log(getTopTracks(SpotifyRange.Short));
+            console.log(testAPI());
+          }}
+        >
+          Test API call
         </button>
         <button
           className="footer-btn danger"

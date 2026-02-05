@@ -263,255 +263,6 @@
     const db = await getDB();
     return db.add(STORE_NAME, event);
   }
-  async function updatePlayEvent(id, updates) {
-    const db = await getDB();
-    const event = await db.get(STORE_NAME, id);
-    if (event) {
-      const updated = { ...event, ...updates };
-      await db.put(STORE_NAME, updated);
-    }
-  }
-  function isPlaceholderAudioFeatures(af) {
-    return af.valence === 0.5 && af.energy === 0.5 && af.danceability === 0.5;
-  }
-  async function getEventsNeedingEnrichment(limit = 50) {
-    const db = await getDB();
-    const allEvents = await db.getAll(STORE_NAME);
-    return allEvents.filter((event) => {
-      const needsFeatures = !event.audioFeatures || isPlaceholderAudioFeatures(event.audioFeatures);
-      return needsFeatures && event.trackUri.startsWith("spotify:track:");
-    }).slice(0, limit);
-  }
-
-  // src/services/spotify-api.ts
-  var STORAGE_PREFIX = "listening-stats:";
-  var MIN_API_INTERVAL_MS = 1e4;
-  var BATCH_SIZE = 3;
-  var DEFAULT_BACKOFF_MS = 3e5;
-  var MAX_BACKOFF_MS = 36e5;
-  var CACHE_PERSIST_INTERVAL_MS = 6e4;
-  var audioFeaturesCache = /* @__PURE__ */ new Map();
-  var artistGenresCache = /* @__PURE__ */ new Map();
-  var rateLimitedUntil = 0;
-  var lastApiCallTime = 0;
-  var cachesPersistTimeout = null;
-  function initFromStorage() {
-    try {
-      const storedRateLimit = localStorage.getItem(`${STORAGE_PREFIX}rateLimitedUntil`);
-      if (storedRateLimit) {
-        rateLimitedUntil = parseInt(storedRateLimit, 10);
-        if (Date.now() >= rateLimitedUntil) {
-          rateLimitedUntil = 0;
-          localStorage.removeItem(`${STORAGE_PREFIX}rateLimitedUntil`);
-        }
-      }
-      const storedAudioFeatures = localStorage.getItem(`${STORAGE_PREFIX}audioFeaturesCache`);
-      if (storedAudioFeatures) {
-        const parsed = JSON.parse(storedAudioFeatures);
-        audioFeaturesCache = new Map(Object.entries(parsed));
-        console.log(`[ListeningStats] Loaded ${audioFeaturesCache.size} cached audio features`);
-      }
-      const storedGenres = localStorage.getItem(`${STORAGE_PREFIX}artistGenresCache`);
-      if (storedGenres) {
-        const parsed = JSON.parse(storedGenres);
-        artistGenresCache = new Map(Object.entries(parsed));
-        console.log(`[ListeningStats] Loaded ${artistGenresCache.size} cached artist genres`);
-      }
-    } catch (error) {
-      console.warn("[ListeningStats] Failed to load cached API data:", error);
-    }
-  }
-  function scheduleCachePersist() {
-    if (cachesPersistTimeout) return;
-    cachesPersistTimeout = window.setTimeout(() => {
-      persistCaches();
-      cachesPersistTimeout = null;
-    }, CACHE_PERSIST_INTERVAL_MS);
-  }
-  function persistCaches() {
-    try {
-      const audioFeaturesObj = {};
-      const audioEntries = Array.from(audioFeaturesCache.entries()).slice(-500);
-      audioEntries.forEach(([k, v]) => {
-        audioFeaturesObj[k] = v;
-      });
-      localStorage.setItem(`${STORAGE_PREFIX}audioFeaturesCache`, JSON.stringify(audioFeaturesObj));
-      const genresObj = {};
-      const genreEntries = Array.from(artistGenresCache.entries()).slice(-500);
-      genreEntries.forEach(([k, v]) => {
-        genresObj[k] = v;
-      });
-      localStorage.setItem(`${STORAGE_PREFIX}artistGenresCache`, JSON.stringify(genresObj));
-    } catch (error) {
-      console.warn("[ListeningStats] Failed to persist caches:", error);
-    }
-  }
-  function handleRateLimit(error) {
-    let backoffMs = DEFAULT_BACKOFF_MS;
-    if (error?.headers?.["retry-after"]) {
-      const retryAfter = parseInt(error.headers["retry-after"], 10);
-      if (!isNaN(retryAfter)) {
-        backoffMs = Math.min(retryAfter * 1e3, MAX_BACKOFF_MS);
-      }
-    } else if (error?.body?.["Retry-After"]) {
-      const retryAfter = parseInt(error.body["Retry-After"], 10);
-      if (!isNaN(retryAfter)) {
-        backoffMs = Math.min(retryAfter * 1e3, MAX_BACKOFF_MS);
-      }
-    }
-    rateLimitedUntil = Date.now() + backoffMs;
-    localStorage.setItem(`${STORAGE_PREFIX}rateLimitedUntil`, rateLimitedUntil.toString());
-    console.log(`[ListeningStats] Rate limited, backing off for ${Math.ceil(backoffMs / 6e4)} minutes`);
-  }
-  function clearRateLimit() {
-    if (rateLimitedUntil > 0) {
-      rateLimitedUntil = 0;
-      localStorage.removeItem(`${STORAGE_PREFIX}rateLimitedUntil`);
-    }
-  }
-  function isApiAvailable() {
-    return Date.now() >= rateLimitedUntil;
-  }
-  async function waitForApiSlot() {
-    if (!isApiAvailable()) {
-      const waitTime = rateLimitedUntil - Date.now();
-      console.log(`[ListeningStats] Rate limited, skipping (${Math.ceil(waitTime / 1e3)}s remaining)`);
-      return false;
-    }
-    const timeSinceLastCall = Date.now() - lastApiCallTime;
-    if (timeSinceLastCall < MIN_API_INTERVAL_MS) {
-      await new Promise((resolve) => setTimeout(resolve, MIN_API_INTERVAL_MS - timeSinceLastCall));
-    }
-    lastApiCallTime = Date.now();
-    return true;
-  }
-  initFromStorage();
-  function extractTrackId(uri) {
-    const match = uri.match(/spotify:track:([a-zA-Z0-9]+)/);
-    return match ? match[1] : null;
-  }
-  function extractArtistId(uri) {
-    const match = uri.match(/spotify:artist:([a-zA-Z0-9]+)/);
-    return match ? match[1] : null;
-  }
-  async function getAudioAnalysis(trackUri) {
-    try {
-      const data = await Spicetify.getAudioData(trackUri);
-      if (data?.track?.tempo) {
-        return { tempo: data.track.tempo };
-      }
-    } catch (error) {
-    }
-    return null;
-  }
-  function isPlaceholderAudioFeatures2(af) {
-    return af.valence === 0.5 && af.energy === 0.5 && af.danceability === 0.5;
-  }
-  async function fetchAudioFeaturesBatch(trackUris) {
-    const result = /* @__PURE__ */ new Map();
-    const uncachedUris = trackUris.filter((uri) => {
-      if (audioFeaturesCache.has(uri)) {
-        const cached = audioFeaturesCache.get(uri);
-        if (!isPlaceholderAudioFeatures2(cached)) {
-          result.set(uri, cached);
-          return false;
-        }
-      }
-      return extractTrackId(uri) !== null;
-    });
-    if (uncachedUris.length === 0) {
-      return result;
-    }
-    const tempoFromAnalysis = /* @__PURE__ */ new Map();
-    for (const uri of uncachedUris) {
-      const analysis = await getAudioAnalysis(uri);
-      if (analysis) {
-        tempoFromAnalysis.set(uri, analysis.tempo);
-      }
-    }
-    const stillNeeded = uncachedUris;
-    if (stillNeeded.length > 0 && await waitForApiSlot()) {
-      const smallBatch = stillNeeded.slice(0, BATCH_SIZE);
-      try {
-        const ids = smallBatch.map((uri) => extractTrackId(uri)).join(",");
-        const response = await Spicetify.CosmosAsync.get(
-          `https://api.spotify.com/v1/audio-features?ids=${ids}`
-        );
-        if (response?.audio_features) {
-          clearRateLimit();
-          response.audio_features.forEach((features, index) => {
-            if (features) {
-              const uri = smallBatch[index];
-              const tempo = tempoFromAnalysis.get(uri) || features.tempo;
-              const audioFeatures = {
-                energy: features.energy,
-                valence: features.valence,
-                danceability: features.danceability,
-                tempo,
-                acousticness: features.acousticness,
-                instrumentalness: features.instrumentalness,
-                speechiness: features.speechiness,
-                liveness: features.liveness
-              };
-              audioFeaturesCache.set(uri, audioFeatures);
-              result.set(uri, audioFeatures);
-            }
-          });
-          scheduleCachePersist();
-          console.log(`[ListeningStats] Got ${response.audio_features.filter(Boolean).length} audio features from Web API`);
-        }
-      } catch (error) {
-        if (error?.message?.includes("429") || error?.status === 429) {
-          handleRateLimit(error);
-        } else {
-          console.warn("[ListeningStats] Web API audio features failed:", error);
-        }
-      }
-    }
-    return result;
-  }
-  async function fetchArtistGenresBatch(artistUris) {
-    const result = /* @__PURE__ */ new Map();
-    const uncachedUris = artistUris.filter((uri) => {
-      if (artistGenresCache.has(uri)) {
-        result.set(uri, artistGenresCache.get(uri));
-        return false;
-      }
-      return extractArtistId(uri) !== null;
-    });
-    if (uncachedUris.length === 0) {
-      return result;
-    }
-    if (await waitForApiSlot()) {
-      const smallBatch = uncachedUris.slice(0, BATCH_SIZE);
-      try {
-        const ids = smallBatch.map((uri) => extractArtistId(uri)).join(",");
-        const response = await Spicetify.CosmosAsync.get(
-          `https://api.spotify.com/v1/artists?ids=${ids}`
-        );
-        if (response?.artists) {
-          clearRateLimit();
-          response.artists.forEach((artist, index) => {
-            if (artist) {
-              const genres = artist.genres || [];
-              const uri = smallBatch[index];
-              artistGenresCache.set(uri, genres);
-              result.set(uri, genres);
-            }
-          });
-          scheduleCachePersist();
-          console.log(`[ListeningStats] Got genres for ${response.artists.filter(Boolean).length} artists`);
-        }
-      } catch (error) {
-        if (error?.message?.includes("429") || error?.status === 429) {
-          handleRateLimit(error);
-        } else {
-          console.warn("[ListeningStats] Artist genres fetch failed:", error);
-        }
-      }
-    }
-    return result;
-  }
 
   // src/services/tracker.ts
   var MIN_PLAY_TIME_MS = 1e4;
@@ -575,7 +326,9 @@
     };
     try {
       await addPlayEvent(event);
-      console.log(`[ListeningStats] Saved: ${currentTrack.name} - ${formatTime(totalPlayedMs)}`);
+      console.log(
+        `[ListeningStats] Saved: ${currentTrack.name} - ${formatTime(totalPlayedMs)}`
+      );
       emitStatsUpdated();
     } catch (error) {
       console.error("[ListeningStats] Failed to save play event:", error);
@@ -595,7 +348,9 @@
     if (newTrack) {
       playStartTime = Date.now();
       isPlaying = !Spicetify.Player.data?.isPaused;
-      console.log(`[ListeningStats] Now tracking: ${newTrack.name} by ${newTrack.artistName}`);
+      console.log(
+        `[ListeningStats] Now tracking: ${newTrack.name} by ${newTrack.artistName}`
+      );
     } else {
       playStartTime = null;
       isPlaying = false;
@@ -607,7 +362,9 @@
     if (!currentTrack || !playStartTime) return;
     if (wasPlaying && !isPlaying) {
       accumulatedPlayTime += Date.now() - playStartTime;
-      console.log(`[ListeningStats] Paused - accumulated ${formatTime(accumulatedPlayTime)}`);
+      console.log(
+        `[ListeningStats] Paused - accumulated ${formatTime(accumulatedPlayTime)}`
+      );
     } else if (!wasPlaying && isPlaying) {
       playStartTime = Date.now();
       console.log("[ListeningStats] Resumed playback");
@@ -644,7 +401,10 @@
             context: currentTrack.context,
             isExplicit: currentTrack.isExplicit
           };
-          localStorage.setItem("listening-stats:pendingEvent", JSON.stringify(pendingEvent));
+          localStorage.setItem(
+            "listening-stats:pendingEvent",
+            JSON.stringify(pendingEvent)
+          );
         }
       }
     });
@@ -663,93 +423,12 @@
       }
     }
   }
-  var enrichmentInProgress = false;
-  var enrichmentCycle = "audioFeatures";
-  async function runBackgroundEnrichment(force = false) {
-    if (enrichmentInProgress) return;
-    if (!isApiAvailable()) {
-      console.log("[ListeningStats] Skipping enrichment - API rate limited");
-      return;
-    }
-    if (!force && !Spicetify.Player.isPlaying()) {
-      console.log("[ListeningStats] Skipping enrichment - not playing");
-      return;
-    }
-    enrichmentInProgress = true;
-    try {
-      const events = await getEventsNeedingEnrichment(20);
-      if (events.length === 0) {
-        return;
-      }
-      console.log(`[ListeningStats] Enriching ${events.length} events (${enrichmentCycle} cycle)...`);
-      let updatedCount = 0;
-      if (enrichmentCycle === "audioFeatures") {
-        const trackUris = [...new Set(
-          events.filter((e) => !e.audioFeatures && e.trackUri.startsWith("spotify:track:")).map((e) => e.trackUri)
-        )];
-        if (trackUris.length > 0) {
-          try {
-            const audioFeaturesMap = await fetchAudioFeaturesBatch(trackUris);
-            console.log(`[ListeningStats] Fetched audio features for ${audioFeaturesMap.size}/${trackUris.length} tracks`);
-            for (const event of events) {
-              if (!event.id || event.audioFeatures) continue;
-              if (audioFeaturesMap.has(event.trackUri)) {
-                await updatePlayEvent(event.id, { audioFeatures: audioFeaturesMap.get(event.trackUri) });
-                updatedCount++;
-              }
-            }
-          } catch (error) {
-            console.warn("[ListeningStats] Audio features batch failed:", error);
-          }
-        }
-        enrichmentCycle = "genres";
-      } else {
-        const artistUris = [...new Set(
-          events.filter((e) => !e.genres && e.artistUri).map((e) => e.artistUri)
-        )];
-        if (artistUris.length > 0) {
-          try {
-            const genresMap = await fetchArtistGenresBatch(artistUris);
-            console.log(`[ListeningStats] Fetched genres for ${genresMap.size}/${artistUris.length} artists`);
-            for (const event of events) {
-              if (!event.id || event.genres) continue;
-              if (genresMap.has(event.artistUri)) {
-                await updatePlayEvent(event.id, { genres: genresMap.get(event.artistUri) });
-                updatedCount++;
-              }
-            }
-          } catch (error) {
-            console.warn("[ListeningStats] Artist genres batch failed:", error);
-          }
-        }
-        enrichmentCycle = "audioFeatures";
-      }
-      if (updatedCount > 0) {
-        console.log(`[ListeningStats] Enrichment complete: updated ${updatedCount} events`);
-      }
-    } catch (error) {
-      console.error("[ListeningStats] Background enrichment failed:", error);
-    } finally {
-      enrichmentInProgress = false;
-    }
-  }
-  var enrichmentInterval = null;
-  var ENRICHMENT_INTERVAL_MS = 15 * 60 * 1e3;
-  function startBackgroundEnrichment() {
-    if (enrichmentInterval) return;
-    enrichmentInterval = window.setInterval(() => {
-      runBackgroundEnrichment();
-    }, ENRICHMENT_INTERVAL_MS);
-    setTimeout(runBackgroundEnrichment, 6e4);
-    console.log("[ListeningStats] Background enrichment started (15 min interval)");
-  }
 
   // src/app.tsx
   async function main() {
     console.log("[ListeningStats] Tracker extension starting...");
     await recoverPendingEvents();
     initTracker();
-    startBackgroundEnrichment();
     console.log("[ListeningStats] Tracker extension loaded!");
   }
   (function init() {

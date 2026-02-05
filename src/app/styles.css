@@ -35,6 +35,14 @@
   margin: 0;
 }
 
+.stats-dev-note {
+  font-size: 12px;
+  color: var(--text-subdued);
+  margin: 0;
+  margin-top: 4px;
+  font-style: italic;
+}
+
 /* ===== Period Tabs (inside hero card) ===== */
 .period-tabs {
   display: inline-flex;

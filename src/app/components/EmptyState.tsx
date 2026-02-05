@@ -1,6 +1,7 @@
 // Empty State Component
 import { formatDurationLong, getPeriodDisplayName } from "../../services/stats";
 import { ListeningStats, TimePeriod } from "../../types";
+import { Header } from "./Header";
 import { PeriodTabs } from "./PeriodTabs";
 
 interface EmptyStateProps {
@@ -12,10 +13,7 @@ interface EmptyStateProps {
 export function EmptyState({ stats, period, onPeriodChange }: EmptyStateProps) {
   return (
     <>
-      <div className="stats-header">
-        <h1 className="stats-title">Listening Stats</h1>
-        <p className="stats-subtitle">Your personal music analytics</p>
-      </div>
+      <Header />
 
       <div className="overview-row">
         <div className="overview-card hero">
